@@ -1,0 +1,217 @@
+# Forgejo Actions, modelled on the kui workflow (same runner, same images).
+#
+#   check ── (on a v* tag) ── build [5 targets] ── publish
+#
+# One runner labelled `docker` does everything: rustc targets anything, only
+# the linkers and SDKs differ.
+#   - Linux: cargo-zigbuild against musl, fully static.
+#   - Windows: the gnu target through zig's bundled mingw headers (nothing here
+#     needs MSVC). If it ever does, switch that leg to cargo-xwin as kui does.
+#   - macOS: cargo-zigbuild (zig's Mach-O linker) against a cached copy of the
+#     MacOSX SDK for the framework stubs. Apple's Xcode license governs that
+#     SDK.
+#
+# The docker jobs use the stock node image rather than the rust one: checkout,
+# cache and the artifact actions are JavaScript actions and the runner execs
+# `node` inside the job container. Rust comes from rustup. Artifact actions
+# are the v3 ones; v4 is not supported by Forgejo's artifact backend.
+#
+# publish uploads the binaries plus checksums.sha256 to the Forgejo generic
+# package registry (package `qd`, version = tag without the `v`), which is
+# what `qd self-update` reads. Needs the repository secret PACKAGES_TOKEN
+# (a personal access token with write:packages).
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_HOME: /usr/local/cargo
+  RUSTUP_HOME: /usr/local/rustup
+
+jobs:
+  check:
+    runs-on: docker
+    container:
+      image: node:24-bookworm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          set -eu
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl
+          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal \
+            --default-toolchain stable -c rustfmt -c clippy
+          echo "${CARGO_HOME}/bin" >> "$GITHUB_PATH"
+          "${CARGO_HOME}/bin/cargo" --version
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/cargo/registry/index
+            /usr/local/cargo/registry/cache
+            /usr/local/cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+  build:
+    needs: check
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: docker
+    container:
+      image: node:24-bookworm
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            asset: qd-linux-x86_64
+          - target: aarch64-unknown-linux-musl
+            asset: qd-linux-aarch64
+          - target: x86_64-pc-windows-gnu
+            asset: qd-windows-x86_64.exe
+          - target: aarch64-apple-darwin
+            asset: qd-macos-aarch64
+            sdk: "true"
+          - target: x86_64-apple-darwin
+            asset: qd-macos-x86_64
+            sdk: "true"
+    env:
+      CARGO_ZIGBUILD_VERSION: "0.23.3"
+      ZIGLANG_VERSION: "0.16.0"
+      SDKROOT: /usr/local/MacOSX15.5.sdk
+      MACOS_SDK_URL: https://github.com/joseluisq/macosx-sdks/releases/download/15.5/MacOSX15.5.sdk.tar.xz
+      # Baked into the binary so self-update points at this instance.
+      QD_UPDATE_HOST: ${{ github.server_url }}
+      QD_UPDATE_OWNER: ${{ github.repository_owner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # zig and cargo-zigbuild come as pip wheels (x64 and arm64 Linux), which
+      # keeps the runner's own arch out of the picture.
+      - name: Install toolchain
+        run: |
+          set -eu
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl python3-pip xz-utils
+          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal \
+            --default-toolchain stable -t "${{ matrix.target }}"
+          echo "${CARGO_HOME}/bin" >> "$GITHUB_PATH"
+          pip3 install --break-system-packages \
+            "cargo-zigbuild==${CARGO_ZIGBUILD_VERSION}" "ziglang==${ZIGLANG_VERSION}"
+          cargo-zigbuild --version
+
+      - name: Cache the macOS SDK
+        if: matrix.sdk == 'true'
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/MacOSX15.5.sdk
+          key: macos-sdk-15.5
+
+      - name: Fetch the macOS SDK
+        if: matrix.sdk == 'true'
+        run: |
+          set -eu
+          if [ ! -f "$SDKROOT/SDKSettings.json" ]; then
+            curl -fL --retry 3 "$MACOS_SDK_URL" | tar -xJ -C /usr/local
+          fi
+          test -f "$SDKROOT/SDKSettings.json"
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/cargo/registry/index
+            /usr/local/cargo/registry/cache
+            /usr/local/cargo/git/db
+            target
+          key: native-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: native-${{ matrix.target }}-
+
+      - name: Build
+        run: cargo zigbuild --release --target "${{ matrix.target }}"
+
+      - name: Collect
+        run: |
+          set -eu
+          case "${{ matrix.target }}" in
+            *windows*) bin=qd.exe ;;
+            *) bin=qd ;;
+          esac
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/$bin" "dist/${{ matrix.asset }}"
+          ls -l dist
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    needs: [check, build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: docker
+    container:
+      image: node:24-bookworm
+    env:
+      PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+      PACKAGE_URL: ${{ github.server_url }}/api/packages/${{ github.repository_owner }}/generic/qd
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches Cargo.toml
+        run: |
+          set -eu
+          test -n "$PACKAGES_TOKEN" || { echo "PACKAGES_TOKEN secret is not set" >&2; exit 1; }
+          want="${GITHUB_REF_NAME#v}"
+          have=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          [ "$want" = "$have" ] || { echo "tag $want != Cargo.toml $have" >&2; exit 1; }
+          echo "VERSION=$want" >> "$GITHUB_ENV"
+
+      # Without `name`, v3 downloads every artifact of the run into
+      # <path>/<artifact name>/<file>.
+      - uses: actions/download-artifact@v3
+        with:
+          path: artifacts
+
+      - name: Checksums
+        run: |
+          set -eu
+          mkdir -p dist
+          find artifacts -type f -exec cp {} dist/ \;
+          cd dist
+          for a in qd-linux-x86_64 qd-linux-aarch64 qd-windows-x86_64.exe qd-macos-aarch64 qd-macos-x86_64; do
+            test -f "$a" || { echo "missing $a" >&2; exit 1; }
+          done
+          sha256sum * > checksums.sha256
+          cat checksums.sha256
+
+      - name: Upload to the generic package registry
+        run: |
+          set -eu
+          for f in dist/*; do
+            name=$(basename "$f")
+            echo "uploading $name"
+            curl -fsS -X PUT -H "Authorization: token $PACKAGES_TOKEN" \
+              --upload-file "$f" "$PACKAGE_URL/$VERSION/$name"
+          done
+          echo "published qd $VERSION to $PACKAGE_URL/$VERSION/"
