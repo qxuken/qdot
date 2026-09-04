@@ -204,6 +204,10 @@ jobs:
           done
           sha256sum * > checksums.sha256
           cat checksums.sha256
+          # Shipped beside the binaries so a fresh machine can fetch the
+          # installer without cloning a private repo. Deliberately after the
+          # checksums file: it is the thing that verifies the others.
+          cp ../contrib/install.nu .
 
       - name: Upload to the generic package registry
         run: |

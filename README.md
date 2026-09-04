@@ -50,6 +50,23 @@ and lives next to it or wherever `qd state set-identity` points.
 Releases are cut by pushing a `vX.Y.Z` tag matching `Cargo.toml`;
 `.forgejo/workflows/ci.yml` cross-compiles every target with cargo-zigbuild on
 the Linux runner and uploads the binaries to the Forgejo generic package
-registry, where `qd self-update` finds them. First install:
+registry, where `qd self-update` finds them.
 
-    curl -fLo qd https://drydock9.qxuken.dev/api/packages/qxuken/generic/qd/<version>/qd-macos-aarch64 && chmod +x qd
+## Installing
+
+`contrib/install.nu` picks the right binary for the machine, verifies its
+SHA-256 against the published checksums, and installs it into `~/.local/bin`
+(or `%LOCALAPPDATA%\qd\bin`):
+
+    nu contrib/install.nu
+    nu contrib/install.nu --version 0.1.0 --dest ~/bin
+    nu contrib/install.nu --init-url ssh://git@drydock9-port1.qxuken.dev/qxuken/dotfiles.git
+
+From 0.1.1 onward it is published beside the binaries, so a machine with
+nushell but no clone can fetch it first (0.1.0 shipped binaries only):
+
+    curl -fLO https://drydock9.qxuken.dev/api/packages/qxuken/generic/qd/<version>/install.nu
+
+Without nushell, download the asset for the platform directly
+(`qd-linux-x86_64`, `qd-macos-aarch64`, `qd-windows-x86_64.exe`, …) from
+`.../generic/qd/<version>/` and `chmod +x` it.
