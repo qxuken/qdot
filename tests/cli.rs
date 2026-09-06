@@ -91,6 +91,27 @@ return { enabled = not qd.tag("skip"), path = qd.path.home("other"), brew = { "t
         )
     }
 
+    /// Like `qd`, but with extra environment variables set, so that the tests
+    /// which care about detection can supply them deliberately.
+    fn qd_env(&self, args: &[&str], env: &[(&str, &str)]) -> (bool, String, String) {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_qd"));
+        c.args(["--repo", self.repo.to_str().unwrap()])
+            .args(args)
+            .env("HOME", &self.home)
+            .env("QD_STATE", &self.state)
+            .env_remove("DOTFILES_TAGS")
+            .env_remove("WSL_DISTRO_NAME");
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        let out = c.output().unwrap();
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
     fn ok(&self, args: &[&str]) -> String {
         let (ok, out, err) = self.qd(args);
         assert!(ok, "qd {args:?} failed:\n{out}\n{err}");
@@ -227,6 +248,30 @@ fn tags_state_and_completion() {
 
     let out = e.ok(&["push", "--force", "--dry-run"]);
     assert!(out.contains("[setup v1: --force]"), "{out}");
+}
+
+#[test]
+fn detected_facts_are_not_tags() {
+    let e = Env::new();
+
+    // WSL is a fact about the machine, readable through `qd.host`, and must not
+    // leak into the tag set: a tag is something the machine declares, and one
+    // that reappears on every run could never be removed.
+    let (ok, out, err) = e.qd_env(&["host"], &[("WSL_DISTRO_NAME", "Ubuntu")]);
+    assert!(ok, "{out}{err}");
+    let h: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(h["wsl"], json!(true), "{out}");
+    assert_eq!(h["tags"], json!([]), "wsl must not become a tag: {out}");
+
+    // What the machine does declare still arrives, from either source.
+    e.ok(&["tag", "add", "declared"]);
+    let (ok, out, _) = e.qd_env(
+        &["host"],
+        &[("WSL_DISTRO_NAME", "Ubuntu"), ("DOTFILES_TAGS", "from_env")],
+    );
+    assert!(ok, "{out}");
+    let h: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(h["tags"], json!(["declared", "from_env"]), "{out}");
 }
 
 #[test]

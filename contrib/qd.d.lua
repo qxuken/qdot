@@ -26,7 +26,7 @@
 ---@class qd
 ---@field host qd.host
 ---@field path qd.path
----@field tag fun(name: string): boolean            # machine tag from `qd tag add`
+---@field tag fun(name: string): boolean            # `qd tag add` or $DOTFILES_TAGS; declared, never detected
 ---@field list fun(base: any[], ...: any): any[]    # copy `base` and append
 ---@field env fun(name: string): string|nil
 ---@field exists fun(path: string): boolean

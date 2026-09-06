@@ -70,7 +70,13 @@ drift below was pulled into git only, and anything committed from another machin
 lands in fossil only. Cut the rest over before the gap grows, or re-run the phase 1
 comparison there first.
 
-Two things worth knowing before the next machine:
+Three things worth knowing before the next machine:
+
+- WSL needs no tag. `qd.host.wsl` is detected from `WSL_DISTRO_NAME`, and
+  `wezterm` keys off that directly, so step 3 below only covers tags the machine
+  actually declares (`personal`, `work`). qd up to 0.1.1 also copied `wsl` into the
+  tag set; that is gone, and since nothing reads the tag any more, running an older
+  binary on the WSL machine makes no difference.
 
 - The Nushell tool copied with `cp --update`, so any destination file edited after
   the last push had silently stopped syncing. On macOS that was four neovim files

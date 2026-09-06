@@ -78,8 +78,10 @@ impl Host {
         }
     }
 
-    /// Build from the real environment. `tags` are the machine tags from state;
-    /// `DOTFILES_TAGS` (comma or space separated) and the WSL auto tag are added.
+    /// Build from the real environment. Tags are what the machine declares about
+    /// itself: `tags` from state, plus `DOTFILES_TAGS` (comma or space separated).
+    /// Detected facts stay out of the tag set and are read through `qd.host`
+    /// instead, so that a tag never means two different things.
     pub fn detect(
         dotfiles: impl Into<PathBuf>,
         tags: impl IntoIterator<Item = String>,
@@ -95,9 +97,6 @@ impl Host {
             );
         }
         host.wsl = std::env::var_os("WSL_DISTRO_NAME").is_some();
-        if host.wsl {
-            host.tags.insert("wsl".to_owned());
-        }
         if host.os == Os::Linux {
             host.distro = read_os_release_id(Path::new("/etc/os-release"));
         }

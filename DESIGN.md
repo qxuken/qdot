@@ -30,7 +30,7 @@ local qd = require("qd")
 local pkgs = { "git", "fzf", "ripgrep", "fd", "cmake", "llvm", "fnm", "neovim" }
 
 return {
-  enabled = true,                                  -- default true; e.g. `not qd.tag("wsl")`
+  enabled = true,                                  -- default true; e.g. `not qd.host.wsl`
   path    = qd.host.windows and qd.path.local_appdata("nvim") or qd.path.config("nvim"),
   brew    = qd.host.ubuntu and qd.list(pkgs, "xclip", "xsel") or pkgs, -- plugin key (built-in `brew`)
   scoop   = pkgs,                                  -- plugin key; entries: string or { name=, bucket= } / { name=, tap= }
@@ -101,7 +101,10 @@ Plugins never write or execute anything: `compile` returns file contents and the
 ## `qd` Lua API
 
 - `qd.host` — booleans `darwin`, `ubuntu`, `windows`, `posix`, `wsl`; `qd.host.name`.
-- `qd.tag(name)` — machine tag from `state.toml`.
+- `qd.tag(name)` — a tag the machine declares about itself: `qd tag add`, which writes
+  `state.toml`, or the `DOTFILES_TAGS` environment variable (comma or space separated),
+  which is folded in on top. Detected facts are never tags — ask `qd.host` for those, so
+  that a tag always means "I said so" and stays removable.
 - `qd.path.home(...)`, `.config(...)`, `.cache(...)` (`~/.dotfiles-cache`), `.app_support(...)`, `.appdata(...)`, `.local_appdata(...)`, `.dotfiles(...)`, `.join(...)`.
 - `qd.list(base, ...)` — append; replaces `%root%`.
 - `qd.path.is_absolute(path)`.
