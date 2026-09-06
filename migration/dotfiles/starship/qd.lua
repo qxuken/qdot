@@ -5,7 +5,7 @@ return {
   brew   = { "starship" },
   scoop  = { "starship" },
   ignore = { "**/starship.nu" },
-  dotfile = { include = { "starship.nu" }, env_source = { "env.nu" } },
+  nushell = { include = { "starship.nu" }, env_source = { "env.nu" } },
   setup = {
     version = 1,
     after = function(m)

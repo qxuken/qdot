@@ -5,7 +5,7 @@ return {
   brew   = { "zoxide" },
   scoop  = { "zoxide" },
   ignore = { "**/zoxide.nu" },
-  dotfile = { source = { "zoxide.nu" } },
+  nushell = { source = { "zoxide.nu" } },
   setup = {
     version = 1,
     after = function(m)

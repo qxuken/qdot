@@ -2,19 +2,23 @@
 //!
 //! Two phases share one VM. During *load* the file is evaluated to a table and
 //! only pure helpers are usable. During *hook* the `setup.before` / `setup.after`
-//! functions run and `qd.run`, `qd.exec`, `qd.write` become callable.
+//! functions run and `qd.run`, `qd.exec`, `qd.write` become callable. Plugin
+//! functions (`resolve`, `compile`, `packages.*`) run in the load phase, so
+//! they stay pure and the core does the writing.
 
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use mlua::serde::de::Options as DeOptions;
+use mlua::serde::ser::Options as SerOptions;
 use mlua::{
     Function, HookTriggers, Lua, LuaOptions, LuaSerdeExt, StdLib, Table, Value, Variadic, VmState,
 };
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use crate::config::RawModule;
 use crate::host::Host;
@@ -23,6 +27,17 @@ use crate::host::Host;
 /// far too small for an accidental infinite loop.
 const LOAD_BUDGET: u64 = 5_000_000;
 const HOOK_GRANULARITY: u32 = 1_000;
+
+/// Shared Lua helpers installed onto the `qd` table of every VM.
+const PRELUDE: &str = include_str!("plugins/prelude.lua");
+
+/// Plugins shipped inside the binary, reachable as `require("qd.<name>")`.
+/// The order is the default plugin order when the root file declares none.
+pub const BUILTIN_PLUGINS: &[(&str, &str)] = &[
+    ("nushell", include_str!("plugins/nushell.lua")),
+    ("brew", include_str!("plugins/brew.lua")),
+    ("scoop", include_str!("plugins/scoop.lua")),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -33,6 +48,8 @@ enum Phase {
 pub struct Loaded {
     pub raw: RawModule,
     pub hooks: Hooks,
+    /// The `plugins` list, if the file declared one. Only the root may.
+    pub plugins: Option<Table>,
 }
 
 /// Owns the VM a module was loaded in, so its hook functions stay callable.
@@ -43,6 +60,12 @@ pub struct Hooks {
 }
 
 impl Hooks {
+    /// The VM this file was loaded in. `Lua` is reference counted, so a clone
+    /// keeps the same state alive (used to run plugins declared by the root).
+    pub fn lua(&self) -> &Lua {
+        &self.lua
+    }
+
     pub fn has_before(&self) -> bool {
         self.before.is_some()
     }
@@ -61,9 +84,12 @@ impl Hooks {
 
     fn call<A: Serialize>(&self, f: Option<&Function>, what: &str, arg: &A) -> Result<()> {
         let Some(f) = f else { return Ok(()) };
-        let arg = self.lua.to_value(arg)?;
+        let arg = to_lua(&self.lua, arg)?;
         self.lua.set_app_data(Phase::Hook);
-        let r = f.call::<()>(arg).with_context(|| format!("{what} failed"));
+        let r = f
+            .call::<()>(arg)
+            .map_err(clean_error)
+            .with_context(|| format!("{what} failed"));
         self.lua.set_app_data(Phase::Load);
         r
     }
@@ -80,6 +106,7 @@ pub fn load_file(host: &Host, path: &Path) -> Result<Loaded> {
         .load(&code)
         .set_name(format!("@{}", path.display()))
         .eval()
+        .map_err(clean_error)
         .with_context(|| format!("evaluating {}", path.display()))?;
     lua.remove_hook();
 
@@ -94,18 +121,78 @@ pub fn load_file(host: &Host, path: &Path) -> Result<Loaded> {
 
     let (before, after) =
         take_hooks(&table).with_context(|| format!("{}: bad `setup`", path.display()))?;
+    let plugins =
+        take_plugins(&table).with_context(|| format!("{}: bad `plugins`", path.display()))?;
 
     let raw: RawModule = lua
         .from_value_with(
             Value::Table(table),
-            DeOptions::new().deny_unsupported_types(false),
+            DeOptions::new()
+                .deny_unsupported_types(false)
+                .encode_empty_tables_as_array(true),
         )
         .with_context(|| format!("{}: invalid config", path.display()))?;
 
     Ok(Loaded {
         raw,
         hooks: Hooks { lua, before, after },
+        plugins,
     })
+}
+
+/// Unwrap an mlua error to the message a config author needs.
+///
+/// mlua wraps errors raised inside a Rust callback and, for errors coming back
+/// out of Lua, bakes a stack traceback into the `RuntimeError` string itself.
+/// Neither helps here: a deliberate `error("...", 0)` wants only its message,
+/// and an accidental error already carries `file:line:` in its message. A
+/// traceback through a few config frames adds nothing either way.
+pub fn clean_error(e: mlua::Error) -> anyhow::Error {
+    let mut cause = &e;
+    while let mlua::Error::CallbackError { cause: inner, .. } = cause {
+        cause = inner;
+    }
+    match cause {
+        mlua::Error::RuntimeError(msg) => anyhow!("{}", strip_traceback(msg)),
+        _ => anyhow!("{}", strip_traceback(&cause.to_string())),
+    }
+}
+
+fn strip_traceback(msg: &str) -> String {
+    match msg.find("\nstack traceback:") {
+        Some(i) => msg[..i].trim().to_owned(),
+        None => msg.trim().to_owned(),
+    }
+}
+
+/// Rust → Lua with `None` as `nil` rather than a null sentinel, so config
+/// tables read naturally (`if m.dest then`).
+pub fn to_lua<T: Serialize + ?Sized>(lua: &Lua, value: &T) -> mlua::Result<Value> {
+    lua.to_value_with(
+        value,
+        SerOptions::new()
+            .serialize_none_to_null(false)
+            .serialize_unit_to_null(false),
+    )
+}
+
+/// Lua → Rust for plugin results: functions are an error, empty tables are lists.
+pub fn from_lua<T: DeserializeOwned>(lua: &Lua, value: Value) -> mlua::Result<T> {
+    lua.from_value_with(value, DeOptions::new().encode_empty_tables_as_array(true))
+}
+
+fn take_plugins(table: &Table) -> Result<Option<Table>> {
+    match table.get::<Value>("plugins")? {
+        Value::Nil => Ok(None),
+        Value::Table(t) => {
+            table.set("plugins", Value::Nil)?;
+            Ok(Some(t))
+        }
+        other => bail!(
+            "`plugins` must be a list of plugin tables, got {}",
+            other.type_name()
+        ),
+    }
 }
 
 fn take_hooks(table: &Table) -> Result<(Option<Function>, Option<Function>)> {
@@ -131,7 +218,8 @@ fn take_hooks(table: &Table) -> Result<(Option<Function>, Option<Function>)> {
     Ok((before, after))
 }
 
-fn new_vm(host: &Host) -> Result<Lua> {
+/// A fresh sandbox with the `qd` API and the instruction budget installed.
+pub fn new_vm(host: &Host) -> Result<Lua> {
     let lua = Lua::new_with(
         StdLib::STRING | StdLib::TABLE | StdLib::MATH | StdLib::UTF8,
         LuaOptions::default(),
@@ -139,11 +227,22 @@ fn new_vm(host: &Host) -> Result<Lua> {
     lua.set_app_data(Phase::Load);
 
     let g = lua.globals();
-    for name in ["dofile", "loadfile", "load", "require", "collectgarbage"] {
+    // `warn` is Lua's own: a silent no-op until `warn("@on")`, and easy to
+    // reach for instead of `qd.warn`. Removing it turns that into an error
+    // naming the global rather than output that never appears.
+    for name in [
+        "dofile",
+        "loadfile",
+        "load",
+        "require",
+        "collectgarbage",
+        "warn",
+    ] {
         g.set(name, Value::Nil)?;
     }
 
     let qd = build_qd(&lua, host)?;
+    install_prelude(&lua, &g, &qd)?;
     g.set("qd", qd.clone())?;
     g.set("require", make_require(&lua, host.dotfiles.clone(), qd)?)?;
 
@@ -164,14 +263,57 @@ fn new_vm(host: &Host) -> Result<Lua> {
     Ok(lua)
 }
 
-/// `require("qd")` returns the API table; `require("name")` loads
-/// `<repo>/name.lua` (dots become separators) once and caches it.
+/// Evaluate the prelude and install what it returns: `qd.fail`, `qd.warn`,
+/// `qd.debug`, `qd.check`, `qd.schema`, and a `print` that writes to stderr.
+///
+/// Runs before the instruction budget is armed, so the helpers cost a config
+/// nothing. The Lua side gets one primitive, `log`, passed as a chunk argument
+/// rather than through the `qd` table, so configs cannot reach it directly.
+fn install_prelude(lua: &Lua, globals: &Table, qd: &Table) -> Result<()> {
+    let debug = std::env::var_os("QD_DEBUG").is_some();
+    let log = lua.create_function(move |_, (level, msg): (String, String)| {
+        match level.as_str() {
+            "warn" => eprintln!("qd: warning: {msg}"),
+            "debug" if debug => eprintln!("qd: debug: {msg}"),
+            "debug" => {}
+            _ => eprintln!("{msg}"),
+        }
+        Ok(())
+    })?;
+
+    let m: Table = lua
+        .load(PRELUDE)
+        .set_name("@qd:prelude")
+        .call(log)
+        .context("evaluating the built-in Lua prelude")?;
+
+    for name in ["fail", "warn", "debug", "check", "schema"] {
+        qd.set(name, m.get::<Value>(name)?)?;
+    }
+    globals.set("print", m.get::<Value>("print")?)?;
+    Ok(())
+}
+
+/// `require("qd")` returns the API table; `require("qd.<builtin>")` loads a
+/// plugin shipped in the binary; `require("name")` loads `<repo>/name.lua`
+/// (dots become separators). Every result is evaluated once and cached.
 fn make_require(lua: &Lua, repo: PathBuf, qd: Table) -> Result<Function> {
     let cache = lua.create_table()?;
     cache.set("qd", qd)?;
     Ok(lua.create_function(move |lua, name: String| {
         if let Value::Table(t) = cache.get::<Value>(name.as_str())? {
             return Ok(Value::Table(t));
+        }
+        if let Some(builtin) = name
+            .strip_prefix("qd.")
+            .and_then(|n| BUILTIN_PLUGINS.iter().find(|(b, _)| *b == n))
+        {
+            let value: Value = lua
+                .load(builtin.1)
+                .set_name(format!("@qd:{}", builtin.0))
+                .eval()?;
+            cache.set(name.as_str(), value.clone())?;
+            return Ok(value);
         }
         let rel: PathBuf = name.split('.').collect();
         if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
@@ -221,6 +363,10 @@ fn build_qd(lua: &Lua, host: &Host) -> Result<Table> {
     path_fn(lua, &path, "appdata", host.appdata.clone())?;
     path_fn(lua, &path, "local_appdata", host.local_appdata.clone())?;
     path.set(
+        "is_absolute",
+        lua.create_function(|_, p: String| Ok(Path::new(&p).is_absolute()))?,
+    )?;
+    path.set(
         "join",
         lua.create_function(|_, parts: Variadic<String>| {
             let mut it = parts.into_iter();
@@ -255,6 +401,10 @@ fn build_qd(lua: &Lua, host: &Host) -> Result<Table> {
     qd.set(
         "exists",
         lua.create_function(|_, p: String| Ok(Path::new(&p).exists()))?,
+    )?;
+    qd.set(
+        "which",
+        lua.create_function(|_, name: String| Ok(which(&name).map(path_string)))?,
     )?;
 
     qd.set(
@@ -332,6 +482,38 @@ fn path_fn(lua: &Lua, table: &Table, name: &'static str, base: Option<PathBuf>) 
 
 fn path_string(p: PathBuf) -> String {
     p.to_string_lossy().into_owned()
+}
+
+/// First executable named `name` on `PATH` (`PATHEXT` aware on Windows), or a
+/// path given directly if it exists. Read-only, so usable in the load phase.
+pub fn which(name: &str) -> Option<PathBuf> {
+    let given = Path::new(name);
+    if given.components().count() > 1 {
+        return given.is_file().then(|| given.to_path_buf());
+    }
+    let exts: Vec<String> = if cfg!(windows) {
+        let mut v = vec![String::new()];
+        v.extend(
+            std::env::var("PATHEXT")
+                .unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".into())
+                .split(';')
+                .filter(|e| !e.is_empty())
+                .map(|e| e.to_lowercase()),
+        );
+        v
+    } else {
+        vec![String::new()]
+    };
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        for ext in &exts {
+            let candidate = dir.join(format!("{name}{ext}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 fn ensure_hook_phase(lua: &Lua, fname: &str) -> mlua::Result<()> {

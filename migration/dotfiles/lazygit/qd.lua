@@ -9,5 +9,5 @@ return {
   brew   = { "lazygit" },
   scoop  = { { name = "lazygit", bucket = "extras" } },
   ignore = { "**/state.yml" },
-  dotfile = { source = { "config.nu" } },
+  nushell = { source = { "config.nu" } },
 }

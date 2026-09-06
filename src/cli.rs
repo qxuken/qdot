@@ -11,7 +11,7 @@ use crate::config::{ModuleView, RootConfig};
 use crate::crypto::{Crypto, IDENTITY_FILE, RECIPIENTS_FILE};
 use crate::host::Host;
 use crate::journal::Journal;
-use crate::packages::{self, Manager};
+use crate::packages::{self, Action};
 use crate::plan::{Direction, Plan, PlanOpts, plan};
 use crate::repo::{Repo, find_root};
 use crate::state::{State, state_dir};
@@ -75,9 +75,14 @@ enum Cmd {
         #[command(flatten)]
         opts: SyncOpts,
     },
-    /// Regenerate ~/.dotfiles.local.nu and ~/.dotfiles-env.local.nu.
-    Compile,
-    /// Install or upgrade packages from every module.
+    /// Run every plugin's compile step (by default: regenerate
+    /// ~/.dotfiles.local.nu and ~/.dotfiles-env.local.nu).
+    Compile {
+        /// Print what would change and stop.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Install or upgrade packages from every module through a package plugin.
     Packages {
         #[command(subcommand)]
         cmd: PackagesCmd,
@@ -147,7 +152,7 @@ struct SyncOpts {
     /// Never remove files, only report them.
     #[arg(long)]
     no_remove: bool,
-    /// Skip regenerating the Nushell entry files.
+    /// Skip the plugins' compile step (the Nushell entry files).
     #[arg(long)]
     no_compile: bool,
 }
@@ -155,21 +160,24 @@ struct SyncOpts {
 #[derive(Subcommand)]
 enum PackagesCmd {
     Install {
-        #[arg(long, value_enum)]
-        manager: Option<Manager>,
+        /// Package plugin to use (default: first one available on this host).
+        #[arg(long)]
+        manager: Option<String>,
         #[arg(long)]
         dry_run: bool,
     },
     Upgrade {
-        #[arg(long, value_enum)]
-        manager: Option<Manager>,
+        #[arg(long)]
+        manager: Option<String>,
         #[arg(long)]
         dry_run: bool,
     },
-    /// Print the folded package list.
+    /// Print the folded package list, as the plugin returns it.
     List {
-        #[arg(long, value_enum)]
-        manager: Option<Manager>,
+        #[arg(long)]
+        manager: Option<String>,
+        #[arg(long, value_enum, default_value_t = Format::Json)]
+        format: Format,
     },
 }
 
@@ -340,6 +348,7 @@ pub fn run() -> Result<()> {
                 );
             } else {
                 print_plans(&plans, true);
+                print_compile(&compile::compile(&repo)?, true);
             }
         }
         Cmd::Push {
@@ -368,13 +377,15 @@ pub fn run() -> Result<()> {
                 },
             )?;
             print_plans(&plans, false);
+            if !opts.no_compile {
+                print_compile(&compile::compile(&repo)?, false);
+            }
             if opts.dry_run {
                 return Ok(());
             }
-            apply_plans(&mut ctx, &repo, &crypto, &plans)?;
+            let run = apply_plans(&mut ctx, &repo, &crypto, &plans)?;
             if !opts.no_compile {
-                let (a, b) = compile::write(&repo, &repo.host.home)?;
-                println!("compiled {} and {}", a.display(), b.display());
+                run_compile(&ctx, &repo, &run)?;
             }
         }
         Cmd::Pull {
@@ -397,12 +408,15 @@ pub fn run() -> Result<()> {
                 },
             )?;
             print_plans(&plans, false);
+            if !opts.no_compile {
+                print_compile(&compile::compile(&repo)?, false);
+            }
             if opts.dry_run {
                 return Ok(());
             }
-            apply_plans(&mut ctx, &repo, &crypto, &plans)?;
+            let run = apply_plans(&mut ctx, &repo, &crypto, &plans)?;
             if !opts.no_compile {
-                compile::write(&repo, &repo.host.home)?;
+                run_compile(&ctx, &repo, &run)?;
             }
             if let Some(message) = sync {
                 if SystemGit.commit_push(&repo.root, &message)? {
@@ -412,29 +426,27 @@ pub fn run() -> Result<()> {
                 }
             }
         }
-        Cmd::Compile => {
+        Cmd::Compile { dry_run } => {
             let repo = ctx.repo()?;
-            let (a, b) = compile::write(&repo, &repo.host.home)?;
-            println!("wrote {}\nwrote {}", a.display(), b.display());
+            print_compile(&compile::compile(&repo)?, true);
+            if !dry_run {
+                run_compile(&ctx, &repo, &Journal::new_run_id())?;
+            }
         }
         Cmd::Packages { cmd } => {
             let repo = ctx.repo()?;
-            let pick = |m: Option<Manager>| -> Result<Manager> {
-                m.or_else(Manager::detect)
-                    .context("neither brew nor scoop found on PATH; pass --manager")
-            };
             match cmd {
                 PackagesCmd::Install { manager, dry_run } => {
-                    let m = pick(manager)?;
-                    packages::install(m, &packages::collect(&repo, m), dry_run)?;
+                    let p = packages::pick(&repo, manager.as_deref())?;
+                    packages::run(&repo, p, Action::Install, dry_run)?;
                 }
                 PackagesCmd::Upgrade { manager, dry_run } => {
-                    let m = pick(manager)?;
-                    packages::upgrade(m, &packages::collect(&repo, m), dry_run)?;
+                    let p = packages::pick(&repo, manager.as_deref())?;
+                    packages::run(&repo, p, Action::Upgrade, dry_run)?;
                 }
-                PackagesCmd::List { manager } => {
-                    let m = pick(manager)?;
-                    print_fmt(&packages::collect(&repo, m), Format::Toml)?;
+                PackagesCmd::List { manager, format } => {
+                    let p = packages::pick(&repo, manager.as_deref())?;
+                    print_fmt(&packages::list(&repo, p)?, format)?;
                 }
             }
         }
@@ -466,8 +478,8 @@ pub fn run() -> Result<()> {
 
             let repo = ctx.repo()?;
             if !no_packages {
-                match Manager::detect() {
-                    Some(m) => packages::install(m, &packages::collect(&repo, m), false)?,
+                match packages::detect(&repo)? {
+                    Some(p) => packages::run(&repo, p, Action::Install, false)?,
                     None => println!("no package manager found, skipping packages"),
                 }
             }
@@ -481,8 +493,8 @@ pub fn run() -> Result<()> {
                 PlanOpts::default(),
             )?;
             print_plans(&plans, false);
-            apply_plans(&mut ctx, &repo, &crypto, &plans)?;
-            compile::write(&repo, &repo.host.home)?;
+            let run = apply_plans(&mut ctx, &repo, &crypto, &plans)?;
+            run_compile(&ctx, &repo, &run)?;
             println!("initialised {}", root.display());
         }
         Cmd::Remote { cmd } => {
@@ -654,12 +666,14 @@ fn plan_modules<'r>(
         .collect()
 }
 
+/// Apply every plan under one run id and return it, so the compile step can
+/// join the same run and `undo` reverts both together.
 fn apply_plans(
     ctx: &mut Ctx,
-    repo: &Repo,
+    _repo: &Repo,
     crypto: &Crypto,
     plans: &[(&crate::config::Module, Plan)],
-) -> Result<()> {
+) -> Result<String> {
     let journal = ctx.journal();
     let state_dir = ctx.state_dir.clone();
     let mut applier = Applier::new(crypto, &journal, &mut ctx.state, &state_dir);
@@ -676,8 +690,29 @@ fn apply_plans(
     } else {
         println!("nothing to do");
     }
-    let _ = repo;
+    Ok(applier.run)
+}
+
+fn run_compile(ctx: &Ctx, repo: &Repo, run: &str) -> Result<()> {
+    let written = compile::apply(repo, &ctx.journal(), run)?;
+    for p in &written {
+        println!("compiled {}", p.display());
+    }
     Ok(())
+}
+
+/// Pending compile outputs, one line each, like the plan lines.
+fn print_compile(outputs: &[crate::plugin::Output], verbose_empty: bool) {
+    let changed = compile::changed(outputs);
+    if changed.is_empty() {
+        if verbose_empty && !outputs.is_empty() {
+            println!("{:<18} up to date", "compile");
+        }
+        return;
+    }
+    for o in changed {
+        println!("compile  {} ({})", o.path.display(), o.plugin);
+    }
 }
 
 fn print_plans(plans: &[(&crate::config::Module, Plan)], verbose_empty: bool) {

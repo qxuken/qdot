@@ -80,12 +80,18 @@ impl Journal {
     }
 
     /// Move `path` into the trash for `run`; returns the new location.
-    pub fn trash(&self, run: &str, index: usize, path: &Path) -> Result<PathBuf> {
+    /// Keyed by `module` and op `index`, so two modules trashing a file with
+    /// the same name at the same index never overwrite each other.
+    pub fn trash(&self, run: &str, module: &str, index: usize, path: &Path) -> Result<PathBuf> {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "file".into());
-        let dir = self.trash_root().join(run).join(index.to_string());
+        let dir = self
+            .trash_root()
+            .join(run)
+            .join(module)
+            .join(index.to_string());
         std::fs::create_dir_all(&dir)?;
         let target = dir.join(name);
         move_file(path, &target)?;
@@ -121,7 +127,7 @@ impl Journal {
                 (Some(trash), _) => {
                     let mut trashed_current = None;
                     if e.path.exists() {
-                        trashed_current = Some(self.trash(&undo_run, i, &e.path)?);
+                        trashed_current = Some(self.trash(&undo_run, &e.module, i, &e.path)?);
                     }
                     if let Some(parent) = e.path.parent() {
                         std::fs::create_dir_all(parent)?;
@@ -142,7 +148,7 @@ impl Journal {
                 }
                 (None, true) => {
                     if e.path.exists() {
-                        let t = self.trash(&undo_run, i, &e.path)?;
+                        let t = self.trash(&undo_run, &e.module, i, &e.path)?;
                         let rec = JournalEntry {
                             run: undo_run.clone(),
                             ts: now(),

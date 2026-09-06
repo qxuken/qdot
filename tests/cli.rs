@@ -4,8 +4,9 @@ use std::process::Command;
 use qd::compile;
 use qd::crypto::Crypto;
 use qd::host::{Host, Os};
-use qd::packages::{self, Manager};
+use qd::packages;
 use qd::repo::Repo;
+use serde_json::json;
 
 struct Env {
     _tmp: tempfile::TempDir,
@@ -36,7 +37,7 @@ impl Env {
         write(
             &repo.join("qd.lua"),
             r#"local qd = require("qd")
-return { ignore = { "**/.DS_Store" }, dotfile = { source = { qd.path.dotfiles("config.nu") } } }"#,
+return { ignore = { "**/.DS_Store" }, nushell = { source = { qd.path.dotfiles("config.nu") } } }"#,
         );
         write(&repo.join("config.nu"), "# root\n");
         write(
@@ -47,7 +48,7 @@ return {
   brew = { "tool", { name = "extra", tap = "some/tap" } },
   scoop = { "tool", { name = "extra", bucket = "extras" } },
   encrypt = { "**/*.secret" },
-  dotfile = { source = { "config.nu" }, env_source = { "env.nu" } },
+  nushell = { source = { "config.nu" }, env_source = { "env.nu" } },
   setup = { version = 1, after = function(m) qd.write(qd.path.join(m.dest, "gen"), "g") end },
   ignore = { "**/gen" },
 }"#,
@@ -128,6 +129,10 @@ fn status_push_pull_undo_through_the_binary() {
 
     let out = e.ok(&["push"]);
     assert!(out.contains("applied"), "{out}");
+    assert!(
+        out.contains("compile  ") && out.contains("compiled "),
+        "compile step is planned and reported: {out}"
+    );
     assert_eq!(read(&e.home.join(".config/app/a.txt")), "a1");
     assert_eq!(read(&e.home.join(".config/app/gen")), "g", "setup hook ran");
     assert_eq!(read(&e.home.join("other/o.txt")), "o1");
@@ -141,6 +146,7 @@ fn status_push_pull_undo_through_the_binary() {
 
     let out = e.ok(&["status"]);
     assert!(out.contains("app                up to date"), "{out}");
+    assert!(out.contains("compile            up to date"), "{out}");
 
     let state = read(&e.state.join("state.toml"));
     assert!(
@@ -227,19 +233,24 @@ fn tags_state_and_completion() {
 fn packages_fold_across_modules() {
     let e = Env::new();
     let repo = Repo::load(Host::new(Os::Darwin, &e.home, &e.repo)).unwrap();
-    let brew = packages::collect(&repo, Manager::Brew);
+    let brew = packages::pick(&repo, Some("brew")).unwrap();
     assert_eq!(
-        brew.packages,
-        ["tool", "extra", "third", "second"],
+        packages::list(&repo, brew).unwrap(),
+        json!({ "packages": ["tool", "extra", "third", "second"], "sources": ["some/tap"] }),
         "modules fold in name order"
     );
-    assert_eq!(brew.sources, ["some/tap"]);
-    let scoop = packages::collect(&repo, Manager::Scoop);
-    assert_eq!(scoop.packages, ["main/tool", "extras/extra"]);
-    assert_eq!(scoop.sources, ["main", "extras"]);
+    let scoop = packages::pick(&repo, Some("scoop")).unwrap();
+    assert_eq!(
+        packages::list(&repo, scoop).unwrap(),
+        json!({ "packages": ["main/tool", "extras/extra"], "sources": ["main", "extras"] })
+    );
+    let err = format!("{:#}", packages::pick(&repo, Some("nushell")).unwrap_err());
+    assert!(err.contains("no `packages` section"), "{err}");
 
     let out = e.ok(&["packages", "list", "--manager", "brew"]);
     assert!(out.contains("\"some/tap\""), "{out}");
+    let out = e.ok(&["packages", "list", "--manager", "brew", "--format", "toml"]);
+    assert!(out.contains("sources = [\"some/tap\"]"), "{out}");
     let out = e.ok(&["packages", "install", "--manager", "brew", "--dry-run"]);
     assert!(
         out.contains("$ brew tap some/tap")
@@ -257,24 +268,24 @@ fn packages_fold_across_modules() {
 fn compile_orders_like_the_nushell_tool() {
     let e = Env::new();
     let repo = Repo::load(Host::new(Os::Darwin, &e.home, &e.repo)).unwrap();
-    let c = compile::compile(&repo);
+    let outputs = compile::compile(&repo).unwrap();
+    assert_eq!(outputs.len(), 2);
+    assert_eq!(outputs[0].plugin, "nushell");
+    assert_eq!(outputs[0].path, e.home.join(".dotfiles.local.nu"));
     assert_eq!(
-        c.main,
-        [
-            format!("source `{}`", e.repo.join("config.nu").display()),
-            format!(
-                "source `{}`",
-                e.home.join(".config/app/config.nu").display()
-            ),
-        ]
+        outputs[0].content,
+        format!(
+            "source `{}`\nsource `{}`\n",
+            e.repo.join("config.nu").display(),
+            e.home.join(".config/app/config.nu").display()
+        )
     );
+    assert_eq!(outputs[1].path, e.home.join(".dotfiles-env.local.nu"));
     assert_eq!(
-        c.env,
-        [format!(
-            "source `{}`",
-            e.home.join(".config/app/env.nu").display()
-        )]
+        outputs[1].content,
+        format!("source `{}`\n", e.home.join(".config/app/env.nu").display())
     );
+    assert_eq!(compile::changed(&outputs).len(), 2, "nothing written yet");
 }
 
 #[test]

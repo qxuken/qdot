@@ -6,5 +6,5 @@ return {
   path  = qd.host.windows and qd.path.appdata("yazi", "config") or qd.path.config("yazi"),
   brew  = qd.host.ubuntu and qd.list(pkgs, "xclip", "xsel") or pkgs,
   scoop = pkgs,
-  dotfile = { source = { "config.nu" } },
+  nushell = { source = { "config.nu" } },
 }

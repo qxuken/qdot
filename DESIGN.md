@@ -14,6 +14,7 @@ Replacement for `dotfiles.nu`: a single static binary, Rust, Lua-configured, git
 | Hosting/CI | Forgejo Actions on one Linux runner, cross-compile matrix, upload to Forgejo Releases | `qd self-update` reads the releases API |
 | Machine state | `state.toml` in the platform state dir, plus `journal.jsonl` and a trash dir | replaces dest-exists first-run detection and `DOTFILES_TAGS` env |
 | Sync semantics | content-hash compare, plan/apply split, atomic writes, removes go to trash | fixes mtime clobbering from fresh clones; makes `status`/`--dry-run` free |
+| Plugins | Lua tables declared by the root `qd.lua`; the Nushell compiler and brew/scoop ship as built-ins | keeps the core a pure sync pipeline; anything shell- or package-manager-specific is data folded by a plugin |
 | Caching | none | thirteen small modules; add a `[cache]` table later if ever needed |
 
 ## Repos
@@ -31,8 +32,8 @@ local pkgs = { "git", "fzf", "ripgrep", "fd", "cmake", "llvm", "fnm", "neovim" }
 return {
   enabled = true,                                  -- default true; e.g. `not qd.tag("wsl")`
   path    = qd.host.windows and qd.path.local_appdata("nvim") or qd.path.config("nvim"),
-  brew    = qd.host.ubuntu and qd.list(pkgs, "xclip", "xsel") or pkgs,
-  scoop   = pkgs,                                  -- entries: string or { name=, bucket= } / { name=, tap= }
+  brew    = qd.host.ubuntu and qd.list(pkgs, "xclip", "xsel") or pkgs, -- plugin key (built-in `brew`)
+  scoop   = pkgs,                                  -- plugin key; entries: string or { name=, bucket= } / { name=, tap= }
   files   = {                                      -- extra pairs outside `path`
     -- src is relative to this module's directory in the repo (may be stored as src.age);
     -- a pair source is owned by the pair and is not mirrored into `path`
@@ -41,7 +42,7 @@ return {
   include = { qd.path.dotfiles(".editorconfig") }, -- copied into dest on push only
   ignore  = { "**/history.txt" },                  -- globs relative to dest; list files your setup hook generates here
   encrypt = { "**/*.p12" },                        -- globs relative to dest; stored as `<name>.age`
-  dotfile = {
+  nushell = {                                      -- plugin key (built-in `nushell`)
     include    = { "vpn.nu" },                     -- `use`
     source     = { "config.nu" },                  -- `source`
     env_include = {},
@@ -55,9 +56,47 @@ return {
 }
 ```
 
-Root `qd.lua` returns the same shape; its `ignore`, `encrypt`, `include`, and `dotfile` apply to every module. Modules can `qd.require("lib")` for helpers, restricted to the repo directory.
+Core fields are `enabled`, `path`, `files`, `include`, `ignore`, `encrypt`, `setup`. Every other key must be the name of a loaded plugin, which validates and resolves it; a typo is an error naming the module and the loaded plugins.
 
-Hook argument `m`: `{ name, src, dest, config = <resolved table> }`.
+Root `qd.lua` returns the same shape; its `ignore`, `encrypt`, `include` and plugin keys apply to every module, and it may declare `plugins`. Modules can `require("lib")` for helpers, restricted to the repo directory.
+
+Hook argument `m`: the module's `qd show` view (`name`, `src`, `dest`, core fields, plugin keys).
+
+## Plugins
+
+A plugin is a Lua table. The root file lists them; with no `plugins` key the built-ins load in this order: `qd.nushell`, `qd.brew`, `qd.scoop`. Declaring the list replaces that set, so built-ins are opted back in with `require("qd.<name>")`.
+
+```lua
+-- root qd.lua
+return {
+  plugins = { require("qd.nushell"), require("qd.brew"), require("plugins.aliases") },
+}
+```
+
+```lua
+-- plugins/aliases.lua: everything optional except `name`, everything pure
+local qd = require("qd")
+return {
+  name = "aliases",                                 -- owns the `aliases` key in every qd.lua
+  available = function() return qd.which("brew") ~= nil end, -- gates package detection
+  resolve = function(m, value)                      -- load time; m = { name, src, dest, root }
+    if m.root then qd.fail("`aliases` belongs in modules") end
+    return qd.check(value, qd.schema.list(qd.schema.string()), "aliases")
+  end,
+  compile = function(ctx)                           -- ctx = { root, global, modules }
+    return { { path = qd.path.home(".aliases"), content = "..." } }
+  end,
+  packages = {
+    list    = function(ctx) return { ... } end,     -- printed by `qd packages list`
+    install = function(ctx) return { { "brew", "install", "x" } } end, -- argv lists, run by the core
+    upgrade = function(ctx) return { ... } end,
+  },
+}
+```
+
+Plugins never write or execute anything: `compile` returns file contents and the core diffs, writes atomically, trashes the previous version and journals under the same run as the apply, so `status`/`--dry-run` show pending compile output and `undo` reverts it. `packages.*` return commands and the core prints and runs them, so `--dry-run` is free there too. `qd packages` picks the first plugin with a `packages` section whose `available()` holds, or `--manager <name>`.
+
+`contrib/apt.lua` is a complete worked example of a third-party package plugin. The built-in `nushell` plugin resolves relative entries against the module's `path`, folds every module's `nushell` table plus the root's into `~/.dotfiles.local.nu` and `~/.dotfiles-env.local.nu`, unique and reverse sorted so `use` lines precede `source` lines. `brew` and `scoop` fold the package lists (first occurrence wins, taps/buckets collected in first-seen order).
 
 ## `qd` Lua API
 
@@ -65,20 +104,49 @@ Hook argument `m`: `{ name, src, dest, config = <resolved table> }`.
 - `qd.tag(name)` — machine tag from `state.toml`.
 - `qd.path.home(...)`, `.config(...)`, `.cache(...)` (`~/.dotfiles-cache`), `.app_support(...)`, `.appdata(...)`, `.local_appdata(...)`, `.dotfiles(...)`, `.join(...)`.
 - `qd.list(base, ...)` — append; replaces `%root%`.
-- `qd.env(name)`, `qd.exists(path)`.
+- `qd.path.is_absolute(path)`.
+- `qd.env(name)`, `qd.exists(path)`, `qd.which(cmd)` (first match on `PATH`, or nil).
+- `qd.fail(fmt, ...)` — raise a config error, formatted, without a `file:line:` prefix.
+- `qd.check(value, validator, path)` — validate and return `value`; see below.
+- `qd.schema` — validator combinators.
+- `qd.warn(fmt, ...)`, `qd.debug(fmt, ...)` — stderr; `debug` only when `QD_DEBUG` is set.
 - Hook phase only: `qd.run(cmd, ...)` (streams, errors on non-zero), `qd.exec(cmd, ...)` (captures stdout), `qd.write(path, content)`.
+- `require("qd.<name>")` returns a built-in plugin; `require("x.y")` loads `<repo>/x/y.lua`.
 
-Sandbox: fresh `Lua` per file; only `base`, `string`, `table`, `math` opened; no `os`/`io`; instruction budget on load. Hook-phase functions raise outside hooks (phase flag on the host). Ship `qd.d.lua` type stubs for lua-language-server.
+A validator is anything callable as `(value, path) -> value` that raises on failure, so a plain function is one. `qd.schema` builds them:
+
+| Combinator | Accepts |
+|---|---|
+| `string()`, `number()`, `boolean()` | that Lua type |
+| `any()` | anything, nil included |
+| `list(item)` | a list whose elements satisfy `item` |
+| `table { field = v, ... }`, alias `record` | exactly those fields, unknown keys rejected |
+| `map(item)` | any string keys, values satisfying `item` |
+| `optional(inner)` | `inner`, or absent |
+| `enum(...)` | one of those values |
+| `one_of(...)` | a union of validators |
+
+```lua
+local s = qd.schema
+local ENTRY = s.one_of(s.string(), s.table { name = s.string(), tap = s.optional(s.string()) })
+qd.check(list, s.list(ENTRY), "brew")
+```
+
+Errors name the failing path, so `nushell.source[2]` and `brew[1].name` say so themselves. `one_of` surfaces an alternative's own error when only that one accepts the value's type, so a typo in a record still reports `unknown field brew[1].taps` rather than saying nothing matched. Reach the combinators through the namespace: `s.table` and `s.string` would shadow the Lua stdlib modules if pulled into locals. Both helpers live in an embedded Lua prelude evaluated before the instruction budget is armed, so they cost a config nothing.
+
+Sandbox: fresh `Lua` per file; only `base`, `string`, `table`, `math` opened; no `os`/`io`; instruction budget on load. `print` is redirected to stderr, because stdout carries `show --format json` and the `__complete` lists. Hook-phase functions raise outside hooks (phase flag on the host), including inside plugin functions. Plugins run in the root file's VM. Ship `qd.d.lua` type stubs for lua-language-server.
 
 ## Data flow
 
 ```
 CLI args + env ──► Host { os, tags, base paths }
 repo tree      ──► Discover */qd.lua + root qd.lua
-Host + files   ──► Lua load (pure) ──► Module { src, dest, globs, files, include, packages, dotfile, hooks }
+root qd.lua    ──► Plugins (declared, or built-in nushell/brew/scoop)
+Host + files   ──► Lua load (pure) ──► plugin.resolve per key ──► Module { src, dest, globs, files, include, ext, hooks }
 Module         ──► Planner: scan src, scan dest, diff by content hash ──► Plan { first_run, ops }
 Plan           ──► status / --dry-run (print)   |   Apply (fs + age) ──► setup.before / setup.after
-Modules        ──► Packages (brew/scoop)   |   Dotfile compiler (~/.dotfiles.local.nu, ~/.dotfiles-env.local.nu)
+Modules        ──► plugin.compile ──► Output { path, content } ──► diff, atomic write, journal (same run)
+Modules        ──► plugin.packages.* ──► argv lists ──► print / run
 ```
 
 Core types:
@@ -90,9 +158,12 @@ struct Module {
     name: String, src: PathBuf, dest: Option<PathBuf>,
     ignore: GlobSet, encrypt: GlobSet,
     files: Vec<FilePair>, include: Vec<PathBuf>,
-    packages: Packages, dotfile: DotfileEntries,
+    ext: BTreeMap<String, serde_json::Value>,  // plugin keys, after `resolve`
     hooks: Hooks,            // keeps the Lua state + owned Function handles
 }
+
+struct Plugin { name, available, resolve, compile, packages: { list, install, upgrade } }  // Lua functions in the root VM
+struct Output { plugin: String, path: PathBuf, content: String }
 
 enum Op {
     Copy    { from: PathBuf, to: PathBuf },
@@ -139,8 +210,8 @@ setup_at = 2026-09-04T10:12:00Z
 last_push = 2026-09-04T10:12:00Z
 ```
 
-- `journal.jsonl` — one line per applied op and hook run.
-- `trash/<module>/<timestamp>/<relpath>` — removed files; `qd undo` restores the last apply, `qd trash prune --older 30d`.
+- `journal.jsonl` — one line per applied op, compiled file and hook run.
+- `trash/<run>/<module or plugin>/<index>/<name>` — removed and overwritten files; `qd undo` restores the last apply, `qd trash prune --older 30d`.
 - `qd state adopt` — one-off migration: mark every module whose dest exists as initialized at its current version.
 
 ## Commands
@@ -153,8 +224,8 @@ last_push = 2026-09-04T10:12:00Z
 | `qd init [--url] [--path] [--no-packages]` | clone if needed, record repo in state, packages, push, compile |
 | `qd show [module] [--all] [--format json\|toml]` | resolved config, for verifying against old semantics |
 | `qd list`, `qd host` | modules and destinations; detected host |
-| `qd packages install\|upgrade\|list [--manager] [--dry-run]` | brew or scoop, auto-detected |
-| `qd compile` | regenerate the two Nushell files |
+| `qd packages install\|upgrade\|list [--manager <plugin>] [--dry-run]` | first available package plugin unless named |
+| `qd compile [--dry-run]` | run every plugin's compile step (built-in: the two Nushell files) |
 | `qd remote pull\|push <msg>\|diff` | via `Vcs` trait (system git) |
 | `qd tag list\|add\|rm` | machine tags in state |
 | `qd state show\|path\|adopt\|set-repo\|set-identity` | state file |

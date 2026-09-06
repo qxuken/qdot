@@ -12,8 +12,8 @@ encrypted with age, history in git.
 
 Every module is a directory in the dotfiles repo with a `qd.lua` that returns a
 table; see `contrib/qd.d.lua` for the schema and `DESIGN.md` for how it works.
-A root `qd.lua` holds shared `ignore`, `encrypt`, `include` and `dotfile`
-entries.
+A root `qd.lua` holds shared `ignore`, `encrypt` and `include` entries, plus
+whatever the plugins read from it.
 
 ```lua
 local qd = require("qd")
@@ -22,10 +22,30 @@ return {
   brew    = { "neovim", "ripgrep" },
   encrypt = { "**/*.p12" },
   ignore  = { "**/lazy-lock.json" },
-  dotfile = { source = { "config.nu" }, env_source = { "env.nu" } },
+  nushell = { source = { "config.nu" }, env_source = { "env.nu" } },
   setup   = { version = 1, after = function(m) qd.run("fnm", "install", "--lts") end },
 }
 ```
+
+`brew`, `scoop` and `nushell` are not core fields: they belong to plugins. The
+core syncs files and runs setup hooks; a plugin owns one key in every `qd.lua`
+and turns it into files to write (`compile`) or commands to run (`packages`),
+both pure, so `--dry-run` and `undo` cover them. The three built-ins load
+unless the root file declares its own list:
+
+```lua
+-- root qd.lua
+return {
+  plugins = { require("qd.nushell"), require("qd.brew"), require("plugins.mine") },
+}
+```
+
+Plugins get `qd.fail` for errors, `qd.check` with `qd.schema` for validating
+their key, and
+`qd.warn` / `qd.debug` for output. All plugin and config output goes to
+stderr, `print` included, so `qd show --format json` stays parseable. See the
+Plugins section of `DESIGN.md` for the contract and `contrib/apt.lua` for a
+worked example.
 
 Files a setup hook generates into `path` belong in `ignore`; otherwise the next
 `pull` copies them into the repo and the next `push` on another machine treats

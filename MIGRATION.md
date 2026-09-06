@@ -8,7 +8,7 @@ Status 2026-09-04: every criterion below is met on macOS (34 tests, plus a real-
 
 Exit criteria before touching real data:
 
-- `qd show <module>` resolves every current module's config identically to what `dotfiles verify-config` prints today (paths, packages, globs, dotfile entries), on macOS at least.
+- `qd show <module>` resolves every current module's config identically to what `dotfiles verify-config` prints today (paths, packages, globs, nushell entries), on macOS at least.
 - `qd status` against a scratch clone reports zero ops after a `push --dry-run` followed by a real push into a scratch `HOME`.
 - Round trip: `push` into scratch HOME, edit a file there, `pull` back, encrypted file included, `status` empty again.
 - Remove path: delete a file on one side, confirm `status` shows it distinctly, `--no-remove` skips it, a real run moves it to trash, `undo` restores it.

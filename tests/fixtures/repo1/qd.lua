@@ -4,7 +4,7 @@ return {
   ignore = { "**/.git/**", "**/.DS_Store" },
   encrypt = { "**/*.p12" },
   include = { qd.path.dotfiles(".editorconfig") },
-  dotfile = {
+  nushell = {
     source = { qd.path.dotfiles("config.nu") },
   },
 }

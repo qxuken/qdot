@@ -5,5 +5,5 @@ return {
   brew    = { "openconnect" },
   scoop   = { "openconnect" },
   encrypt = { "**/*.p12", "**/config.yml" },
-  dotfile = { include = { "vpn.nu" } },
+  nushell = { include = { "vpn.nu" } },
 }

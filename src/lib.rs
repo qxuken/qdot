@@ -9,6 +9,7 @@ pub mod journal;
 pub mod lua;
 pub mod packages;
 pub mod plan;
+pub mod plugin;
 pub mod repo;
 pub mod scan;
 pub mod state;

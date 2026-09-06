@@ -1,156 +1,96 @@
-//! Fold every module's package lists and drive brew or scoop.
+//! Package actions. Every plugin with a `packages` section is a manager; the
+//! plugin folds the module lists into commands and the core runs them.
 
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-use crate::config::Package;
+pub use crate::plugin::Action;
+use crate::plugin::Plugin;
 use crate::repo::Repo;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum Manager {
-    Brew,
-    Scoop,
+/// Plugins that manage packages, in declaration order.
+pub fn managers(repo: &Repo) -> Vec<&Plugin> {
+    repo.plugins
+        .iter()
+        .filter(|p| p.manages_packages())
+        .collect()
 }
 
-impl Manager {
-    pub fn name(self) -> &'static str {
-        match self {
-            Manager::Brew => "brew",
-            Manager::Scoop => "scoop",
+/// First manager whose `available()` holds on this host.
+pub fn detect(repo: &Repo) -> Result<Option<&Plugin>> {
+    for p in managers(repo) {
+        if p.available()? {
+            return Ok(Some(p));
         }
     }
-
-    /// First manager found on PATH, brew before scoop.
-    pub fn detect() -> Option<Manager> {
-        [Manager::Brew, Manager::Scoop]
-            .into_iter()
-            .find(|m| m.available())
-    }
-
-    pub fn available(self) -> bool {
-        command(self)
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    }
+    Ok(None)
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct PackageSet {
-    pub packages: Vec<String>,
-    /// brew taps or scoop buckets, in first-seen order.
-    pub sources: Vec<String>,
-}
-
-pub fn collect(repo: &Repo, manager: Manager) -> PackageSet {
-    let mut set = PackageSet::default();
-    let mut seen = std::collections::HashSet::new();
-    for m in &repo.modules {
-        let list = match manager {
-            Manager::Brew => &m.brew,
-            Manager::Scoop => &m.scoop,
-        };
-        for p in list {
-            if !seen.insert(p.name().to_owned()) {
-                continue;
+/// The manager named by `--manager`, or the detected one.
+pub fn pick<'r>(repo: &'r Repo, name: Option<&str>) -> Result<&'r Plugin> {
+    match name {
+        Some(n) => {
+            let p = repo
+                .plugins
+                .get(n)
+                .with_context(|| format!("no plugin named `{n}`"))?;
+            if !p.manages_packages() {
+                bail!("plugin `{n}` has no `packages` section");
             }
-            match (manager, p) {
-                (
-                    Manager::Brew,
-                    Package::Detailed {
-                        name,
-                        tap: Some(tap),
-                        ..
-                    },
-                ) => {
-                    push_unique(&mut set.sources, tap);
-                    set.packages.push(name.clone());
-                }
-                (
-                    Manager::Scoop,
-                    Package::Detailed {
-                        name,
-                        bucket: Some(bucket),
-                        ..
-                    },
-                ) => {
-                    push_unique(&mut set.sources, bucket);
-                    set.packages.push(format!("{bucket}/{name}"));
-                }
-                (Manager::Scoop, p) => {
-                    push_unique(&mut set.sources, "main");
-                    set.packages.push(format!("main/{}", p.name()));
-                }
-                (Manager::Brew, p) => set.packages.push(p.name().to_owned()),
-            }
+            Ok(p)
         }
+        None => detect(repo)?.with_context(|| {
+            let names: Vec<&str> = managers(repo).iter().map(|p| p.name()).collect();
+            format!(
+                "no package manager found on PATH (checked {}); pass --manager",
+                names.join(", ")
+            )
+        }),
     }
-    set
 }
 
-fn push_unique(v: &mut Vec<String>, s: &str) {
-    if !v.iter().any(|x| x == s) {
-        v.push(s.to_owned());
-    }
-}
-
-pub fn install(manager: Manager, set: &PackageSet, dry_run: bool) -> Result<()> {
-    if set.packages.is_empty() {
-        println!("no {} packages configured", manager.name());
+/// Run the plugin's commands for `action`, printing each first.
+pub fn run(repo: &Repo, plugin: &Plugin, action: Action, dry_run: bool) -> Result<()> {
+    let commands = plugin.package_commands(action, &repo.ctx())?;
+    if commands.is_empty() {
+        println!("no {} packages configured", plugin.name());
         return Ok(());
     }
-    for src in &set.sources {
-        match manager {
-            Manager::Brew => run(manager, &["tap", src], dry_run)?,
-            Manager::Scoop => run(manager, &["bucket", "add", src], dry_run)?,
-        }
+    for argv in &commands {
+        exec(argv, dry_run)?;
     }
-    let mut args = vec!["install"];
-    args.extend(set.packages.iter().map(String::as_str));
-    run(manager, &args, dry_run)
+    Ok(())
 }
 
-pub fn upgrade(manager: Manager, set: &PackageSet, dry_run: bool) -> Result<()> {
-    if set.packages.is_empty() {
-        println!("no {} packages configured", manager.name());
-        return Ok(());
-    }
-    let verb = match manager {
-        Manager::Brew => "upgrade",
-        Manager::Scoop => "update",
-    };
-    let mut args = vec![verb];
-    args.extend(set.packages.iter().map(String::as_str));
-    run(manager, &args, dry_run)
+pub fn list(repo: &Repo, plugin: &Plugin) -> Result<serde_json::Value> {
+    plugin.package_list(&repo.ctx())
 }
 
-fn command(manager: Manager) -> Command {
-    if cfg!(windows) {
-        let mut c = Command::new("cmd");
-        c.args(["/C", manager.name()]);
-        c
-    } else {
-        Command::new(manager.name())
-    }
-}
-
-fn run(manager: Manager, args: &[&str], dry_run: bool) -> Result<()> {
-    println!("$ {} {}", manager.name(), args.join(" "));
+fn exec(argv: &[String], dry_run: bool) -> Result<()> {
+    println!("$ {}", argv.join(" "));
     if dry_run {
         return Ok(());
     }
-    let status = command(manager)
+    let (program, args) = argv.split_first().context("empty command")?;
+    let status = command(program)
         .args(args)
         .status()
-        .with_context(|| format!("cannot start {}", manager.name()))?;
+        .with_context(|| format!("cannot start {program}"))?;
     if !status.success() {
-        bail!(
-            "{} {} exited with {status}",
-            manager.name(),
-            args.first().unwrap_or(&"")
-        );
+        bail!("{} exited with {status}", argv.join(" "));
     }
     Ok(())
+}
+
+/// Package managers on Windows are batch or PowerShell shims, so go through
+/// `cmd /C` there.
+fn command(program: &str) -> Command {
+    if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.args(["/C", program]);
+        c
+    } else {
+        Command::new(program)
+    }
 }

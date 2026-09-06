@@ -111,7 +111,7 @@ impl<'a> Applier<'a> {
                 self.write(module, index, op, from, to, &plain)
             }
             Op::Remove { path } => {
-                let trash = self.journal.trash(&self.run, index, path)?;
+                let trash = self.journal.trash(&self.run, module, index, path)?;
                 self.journal.append(&JournalEntry {
                     run: self.run.clone(),
                     ts: now(),
@@ -151,7 +151,7 @@ impl<'a> Applier<'a> {
 
         let existed = to.exists();
         let trash = if existed {
-            Some(self.journal.trash(&self.run, index, to)?)
+            Some(self.journal.trash(&self.run, module, index, to)?)
         } else {
             None
         };

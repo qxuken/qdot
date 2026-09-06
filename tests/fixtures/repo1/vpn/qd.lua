@@ -6,5 +6,5 @@ return {
   scoop   = { "openconnect" },
   encrypt = { "**/config.yml" },
   ignore  = { "**/history.txt" },
-  dotfile = { include = { "vpn.nu" } },
+  nushell = { include = { "vpn.nu" } },
 }

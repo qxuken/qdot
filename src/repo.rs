@@ -8,11 +8,14 @@ use crate::config::{Module, RootConfig};
 use crate::discover::discover;
 use crate::host::Host;
 use crate::lua::load_file;
+use crate::plugin::{Ctx, Plugins};
 
 pub struct Repo {
     pub root: PathBuf,
     pub host: Host,
     pub global: RootConfig,
+    /// Declared by the root `qd.lua`, or the built-ins.
+    pub plugins: Plugins,
     /// Enabled modules only, sorted by name.
     pub modules: Vec<Module>,
     /// Names of modules that returned `enabled = false` on this host.
@@ -23,6 +26,7 @@ impl std::fmt::Debug for Repo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Repo")
             .field("root", &self.root)
+            .field("plugins", &self.plugins)
             .field("modules", &self.modules)
             .field("disabled", &self.disabled)
             .finish_non_exhaustive()
@@ -37,13 +41,17 @@ impl Repo {
             bail!("{} contains no qd.lua files", root.display());
         }
 
-        let global = match &found.root {
+        let (global, plugins) = match &found.root {
             Some(path) => {
                 let loaded = load_file(&host, path)?;
-                RootConfig::from_raw(loaded.raw, &root)
-                    .with_context(|| format!("{}", path.display()))?
+                let plugins =
+                    Plugins::load(&host, Some(loaded.hooks.lua().clone()), loaded.plugins)
+                        .with_context(|| format!("{}: bad `plugins`", path.display()))?;
+                let global = RootConfig::from_raw(loaded.raw, &root, &plugins)
+                    .with_context(|| format!("{}", path.display()))?;
+                (global, plugins)
             }
-            None => RootConfig::default(),
+            None => (RootConfig::default(), Plugins::load(&host, None, None)?),
         };
 
         let mut modules = Vec::new();
@@ -51,8 +59,21 @@ impl Repo {
         for (name, path) in found.modules {
             let src = path.parent().expect("qd.lua has a parent").to_path_buf();
             let loaded = load_file(&host, &path)?;
-            let module =
-                Module::resolve(&host, &global, name.clone(), src, loaded.raw, loaded.hooks)?;
+            if loaded.plugins.is_some() {
+                bail!(
+                    "{}: `plugins` can only be declared in the root qd.lua",
+                    path.display()
+                );
+            }
+            let module = Module::resolve(
+                &host,
+                &global,
+                &plugins,
+                name.clone(),
+                src,
+                loaded.raw,
+                loaded.hooks,
+            )?;
             if module.enabled {
                 modules.push(module);
             } else {
@@ -64,9 +85,19 @@ impl Repo {
             root,
             host,
             global,
+            plugins,
             modules,
             disabled,
         })
+    }
+
+    /// What plugin functions receive.
+    pub fn ctx(&self) -> Ctx<'_> {
+        Ctx {
+            root: &self.root,
+            global: &self.global,
+            modules: self.modules.iter().map(Module::view).collect(),
+        }
     }
 
     pub fn module(&self, name: &str) -> Result<&Module> {

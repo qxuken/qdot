@@ -7,5 +7,5 @@ return {
   files = {
     { src = ".gitconfig", dest = qd.path.home(".gitconfig"), enabled = not qd.tag("work") },
   },
-  dotfile = { source = { "config.nu" } },
+  nushell = { source = { "config.nu" } },
 }

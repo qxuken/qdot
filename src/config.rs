@@ -12,46 +12,27 @@ use serde::{Deserialize, Serialize};
 
 use crate::host::Host;
 use crate::lua::Hooks;
+use crate::plugin::{Ext, Plugins, Target};
 
 // ---------------------------------------------------------------------------
 // Raw (as returned by qd.lua)
 // ---------------------------------------------------------------------------
 
+/// Core fields are typed; every other key lands in `ext` and must name a
+/// loaded plugin (checked in `Plugins::resolve`, which also lets the plugin
+/// validate and normalise its value).
 #[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields, default)]
+#[serde(default)]
 pub struct RawModule {
     pub enabled: Option<bool>,
     pub path: Option<String>,
-    pub brew: Vec<Package>,
-    pub scoop: Vec<Package>,
     pub files: Vec<RawFilePair>,
     pub include: Vec<String>,
     pub ignore: Vec<String>,
     pub encrypt: Vec<String>,
-    pub dotfile: RawDotfile,
     pub setup: Option<RawSetup>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(untagged)]
-pub enum Package {
-    Name(String),
-    Detailed {
-        name: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tap: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        bucket: Option<String>,
-    },
-}
-
-impl Package {
-    pub fn name(&self) -> &str {
-        match self {
-            Package::Name(n) => n,
-            Package::Detailed { name, .. } => name,
-        }
-    }
+    #[serde(flatten)]
+    pub ext: Ext,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,15 +42,6 @@ pub struct RawFilePair {
     pub dest: String,
     #[serde(default)]
     pub enabled: Option<bool>,
-}
-
-#[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq, Eq)]
-#[serde(deny_unknown_fields, default)]
-pub struct RawDotfile {
-    pub include: Vec<String>,
-    pub source: Vec<String>,
-    pub env_include: Vec<String>,
-    pub env_source: Vec<String>,
 }
 
 /// `before` / `after` are functions and are pulled out by the Lua host before
@@ -84,27 +56,36 @@ pub struct RawSetup {
 // Resolved
 // ---------------------------------------------------------------------------
 
-/// Settings from the root `qd.lua` that apply to every module.
+/// Settings from the root `qd.lua` that apply to every module, plus any
+/// plugin keys it set (resolved by the plugin with `root = true`).
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct RootConfig {
     pub ignore: Vec<String>,
     pub encrypt: Vec<String>,
     pub include: Vec<PathBuf>,
-    pub dotfile: Dotfile,
+    #[serde(flatten)]
+    pub ext: Ext,
 }
 
 impl RootConfig {
-    pub fn from_raw(raw: RawModule, src: &Path) -> Result<RootConfig> {
+    pub fn from_raw(raw: RawModule, src: &Path, plugins: &Plugins) -> Result<RootConfig> {
         if raw.path.is_some() {
             bail!("root qd.lua must not set `path`");
         }
-        if raw.setup.is_some()
-            || !raw.files.is_empty()
-            || !raw.brew.is_empty()
-            || !raw.scoop.is_empty()
-        {
-            bail!("root qd.lua only supports `ignore`, `encrypt`, `include` and `dotfile`");
+        if raw.setup.is_some() || !raw.files.is_empty() || raw.enabled.is_some() {
+            bail!(
+                "root qd.lua only supports `ignore`, `encrypt`, `include`, `plugins` and plugin keys"
+            );
         }
+        let ext = plugins.resolve(
+            &Target {
+                name: "root",
+                src,
+                dest: None,
+                root: true,
+            },
+            raw.ext,
+        )?;
         Ok(RootConfig {
             ignore: raw.ignore,
             encrypt: raw.encrypt,
@@ -113,7 +94,7 @@ impl RootConfig {
                 .iter()
                 .map(|p| absolute(p, None, "include", src))
                 .collect::<Result<_>>()?,
-            dotfile: Dotfile::from_raw(&raw.dotfile, None, src)?,
+            ext,
         })
     }
 }
@@ -122,38 +103,6 @@ impl RootConfig {
 pub struct FilePair {
     pub src: PathBuf,
     pub dest: PathBuf,
-}
-
-#[derive(Debug, Default, Clone, Serialize, PartialEq, Eq)]
-pub struct Dotfile {
-    pub include: Vec<PathBuf>,
-    pub source: Vec<PathBuf>,
-    pub env_include: Vec<PathBuf>,
-    pub env_source: Vec<PathBuf>,
-}
-
-impl Dotfile {
-    fn from_raw(raw: &RawDotfile, dest: Option<&Path>, src: &Path) -> Result<Dotfile> {
-        let conv = |items: &[String], field: &str| -> Result<Vec<PathBuf>> {
-            items
-                .iter()
-                .map(|p| absolute(p, dest, field, src))
-                .collect()
-        };
-        Ok(Dotfile {
-            include: conv(&raw.include, "dotfile.include")?,
-            source: conv(&raw.source, "dotfile.source")?,
-            env_include: conv(&raw.env_include, "dotfile.env_include")?,
-            env_source: conv(&raw.env_source, "dotfile.env_source")?,
-        })
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.include.is_empty()
-            && self.source.is_empty()
-            && self.env_include.is_empty()
-            && self.env_source.is_empty()
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -175,10 +124,9 @@ pub struct Module {
     pub encrypt_set: GlobSet,
     pub files: Vec<FilePair>,
     pub include: Vec<PathBuf>,
-    pub brew: Vec<Package>,
-    pub scoop: Vec<Package>,
-    pub dotfile: Dotfile,
     pub setup: Option<Setup>,
+    /// Plugin keys, already passed through each plugin's `resolve`.
+    pub ext: Ext,
     pub hooks: Hooks,
 }
 
@@ -202,16 +150,16 @@ pub struct ModuleView {
     pub encrypt: Vec<String>,
     pub files: Vec<FilePair>,
     pub include: Vec<PathBuf>,
-    pub brew: Vec<Package>,
-    pub scoop: Vec<Package>,
-    pub dotfile: Dotfile,
     pub setup: Option<Setup>,
+    #[serde(flatten)]
+    pub ext: Ext,
 }
 
 impl Module {
     pub fn resolve(
         _host: &Host,
         root: &RootConfig,
+        plugins: &Plugins,
         name: String,
         src: PathBuf,
         raw: RawModule,
@@ -269,8 +217,17 @@ impl Module {
             });
         }
 
-        let dotfile = Dotfile::from_raw(&raw.dotfile, dest_ref, &src)
-            .with_context(|| ctx("bad `dotfile` entry"))?;
+        let ext = plugins
+            .resolve(
+                &Target {
+                    name: &name,
+                    src: &src,
+                    dest: dest_ref,
+                    root: false,
+                },
+                raw.ext,
+            )
+            .with_context(|| format!("module `{name}`"))?;
 
         let setup = match raw.setup {
             Some(s) => Some(Setup {
@@ -297,10 +254,8 @@ impl Module {
             encrypt_set,
             files,
             include,
-            brew: raw.brew,
-            scoop: raw.scoop,
-            dotfile,
             setup,
+            ext,
             hooks,
         })
     }
@@ -315,10 +270,8 @@ impl Module {
             encrypt: self.encrypt.clone(),
             files: self.files.clone(),
             include: self.include.clone(),
-            brew: self.brew.clone(),
-            scoop: self.scoop.clone(),
-            dotfile: self.dotfile.clone(),
             setup: self.setup.clone(),
+            ext: self.ext.clone(),
         }
     }
 }

@@ -6,7 +6,7 @@ return {
   path  = qd.host.windows and qd.path.local_appdata("nvim") or qd.path.config("nvim"),
   brew  = qd.host.ubuntu and qd.list(pkgs, "xclip", "xsel") or pkgs,
   scoop = pkgs,
-  dotfile = { source = { "config.nu" }, env_source = { "env.nu" } },
+  nushell = { source = { "config.nu" }, env_source = { "env.nu" } },
   setup = {
     version = 1,
     after = function(m) qd.run("fnm", "install", "--lts") end,

@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use qd::config::Package;
 use qd::host::{Host, Os};
 use qd::repo::Repo;
+use serde_json::json;
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -36,29 +36,30 @@ fn loads_all_modules_and_root() {
         [fixture("repo1").join(".editorconfig")]
     );
     assert_eq!(
-        repo.global.dotfile.source,
-        [fixture("repo1").join("config.nu")]
+        repo.global.ext["nushell"]["source"],
+        json!([fixture("repo1").join("config.nu")])
     );
+    assert_eq!(repo.plugins.names(), ["nushell", "brew", "scoop"]);
 }
 
 #[test]
-fn neovim_resolves_paths_packages_and_dotfile() {
+fn neovim_resolves_paths_packages_and_nushell() {
     let repo = Repo::load(host(&[])).unwrap();
     let m = repo.module("neovim").unwrap();
     assert_eq!(m.dest.as_deref(), Some(p("/h/.config/nvim").as_path()));
     assert_eq!(m.src, fixture("repo1").join("neovim"));
 
-    let brew: Vec<&str> = m.brew.iter().map(Package::name).collect();
     assert_eq!(
-        brew,
-        ["git", "fzf", "neovim"],
+        m.ext["brew"],
+        json!(["git", "fzf", "neovim"]),
         "lib.lua via require plus qd.list append"
     );
-    assert_eq!(m.brew, m.scoop);
+    assert_eq!(m.ext["brew"], m.ext["scoop"]);
 
-    assert_eq!(m.dotfile.source, [p("/h/.config/nvim/config.nu")]);
-    assert_eq!(m.dotfile.env_source, [p("/h/.config/nvim/env.nu")]);
-    assert!(m.dotfile.include.is_empty());
+    let nu = &m.ext["nushell"];
+    assert_eq!(nu["source"], json!(["/h/.config/nvim/config.nu"]));
+    assert_eq!(nu["env_source"], json!(["/h/.config/nvim/env.nu"]));
+    assert_eq!(nu["include"], json!([]));
 
     let setup = m.setup.as_ref().expect("setup present");
     assert_eq!((setup.version, setup.before, setup.after), (1, false, true));
@@ -76,7 +77,7 @@ fn root_globs_are_prepended_and_compiled() {
     assert!(m.ignore_set.is_match(".git/HEAD"));
     assert!(m.ignore_set.is_match("sub/.git/HEAD"));
     assert_eq!(m.include, [fixture("repo1").join(".editorconfig")]);
-    assert_eq!(m.dotfile.include, [p("/h/vpn/vpn.nu")]);
+    assert_eq!(m.ext["nushell"]["include"], json!(["/h/vpn/vpn.nu"]));
     assert!(m.setup.is_none());
 }
 
@@ -98,14 +99,10 @@ fn ubuntu_branch_appends_packages() {
     h.os = Os::Linux;
     h.distro = Some("ubuntu".into());
     let repo = Repo::load(h).unwrap();
-    let brew: Vec<&str> = repo
-        .module("neovim")
-        .unwrap()
-        .brew
-        .iter()
-        .map(Package::name)
-        .collect();
-    assert_eq!(brew, ["git", "fzf", "neovim", "xclip"]);
+    assert_eq!(
+        repo.module("neovim").unwrap().ext["brew"],
+        json!(["git", "fzf", "neovim", "xclip"])
+    );
 }
 
 #[test]
@@ -134,20 +131,12 @@ fn detailed_packages_and_setup_version() {
     let repo = Repo::load(host(&[])).unwrap();
     let m = repo.module("starship").unwrap();
     assert_eq!(
-        m.brew,
-        [Package::Detailed {
-            name: "starship".into(),
-            tap: Some("some/tap".into()),
-            bucket: None
-        }]
+        m.ext["brew"],
+        json!([{ "name": "starship", "tap": "some/tap" }])
     );
     assert_eq!(
-        m.scoop,
-        [Package::Detailed {
-            name: "starship".into(),
-            tap: None,
-            bucket: Some("main".into())
-        }]
+        m.ext["scoop"],
+        json!([{ "name": "starship", "bucket": "main" }])
     );
     let setup = m.setup.as_ref().unwrap();
     assert_eq!((setup.version, setup.before, setup.after), (3, true, true));
@@ -164,7 +153,10 @@ fn unknown_field_is_an_error() {
     .unwrap();
     let err = Repo::load(Host::new(Os::Darwin, "/h", tmp.path())).unwrap_err();
     let msg = format!("{err:#}");
-    assert!(msg.contains("typo_field"), "{msg}");
+    assert!(
+        msg.contains("module `broken`") && msg.contains("unknown field `typo_field`"),
+        "{msg}"
+    );
 }
 
 #[test]
@@ -173,7 +165,7 @@ fn relative_path_without_module_path_is_an_error() {
     std::fs::create_dir(tmp.path().join("m")).unwrap();
     std::fs::write(
         tmp.path().join("m/qd.lua"),
-        "return { dotfile = { source = { 'config.nu' } } }",
+        "return { nushell = { source = { 'config.nu' } } }",
     )
     .unwrap();
     let err = format!(
@@ -181,7 +173,10 @@ fn relative_path_without_module_path_is_an_error() {
         Repo::load(Host::new(Os::Darwin, "/h", tmp.path())).unwrap_err()
     );
     assert!(
-        err.contains("dotfile.source") && err.contains("no `path`"),
+        err.contains("module `m`")
+            && err.contains("plugin `nushell`")
+            && err.contains("`nushell.source` entry `config.nu` is relative")
+            && err.contains("no `path`"),
         "{err}"
     );
 }
@@ -208,7 +203,9 @@ fn sandbox_has_no_os_io_or_loaders() {
     std::fs::create_dir(tmp.path().join("m")).unwrap();
     std::fs::write(
         tmp.path().join("m/qd.lua"),
-        "assert(os == nil and io == nil and dofile == nil and loadfile == nil and load == nil)\nreturn {}",
+        "assert(os == nil and io == nil and dofile == nil and loadfile == nil and load == nil)\n\
+         assert(warn == nil, 'Lua warn shadows qd.warn')\n\
+         assert(type(print) == 'function' and type(qd.warn) == 'function')\nreturn {}",
     )
     .unwrap();
     Repo::load(Host::new(Os::Darwin, "/h", tmp.path())).unwrap();
