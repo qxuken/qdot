@@ -58,6 +58,13 @@ identity paths, per-module setup versions), `journal.jsonl`, and `trash/`.
 Override it with `QD_STATE`. Removed and overwritten files go to the trash;
 `qd trash prune --older 30d` cleans up.
 
+Tags gate `enabled` in a config. `qd tag add <name>` records one in `state.toml`,
+which is what you want on a machine you own; `QD_TAGS=a,b` adds tags for one
+command, which is handy for trying a config out (`QD_TAGS=work qd show
+version-control`). `DOTFILES_TAGS` is read too, for the Nushell tool this
+replaces. Detected facts are not tags — a config asks `qd.host.wsl` or
+`qd.host.ubuntu` for those.
+
 ## Keys
 
 `master.rec` (recipients) is committed in the repo root; `master.key` is not

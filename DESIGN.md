@@ -12,7 +12,7 @@ Replacement for `dotfiles.nu`: a single static binary, Rust, Lua-configured, git
 | Encryption | `age` crate, X25519, `master.rec` committed / `master.key` ignored | unchanged from today; SSH-key identities via `age::ssh` are an optional later step |
 | VCS | git on Forgejo, behind a `Vcs` trait; first impl shells out to system git, `git2` backend later | avoids vendored libgit2/libssh2/openssl cross-build pain up front |
 | Hosting/CI | Forgejo Actions on one Linux runner, cross-compile matrix, upload to Forgejo Releases | `qd self-update` reads the releases API |
-| Machine state | `state.toml` in the platform state dir, plus `journal.jsonl` and a trash dir | replaces dest-exists first-run detection and `DOTFILES_TAGS` env |
+| Machine state | `state.toml` in the platform state dir, plus `journal.jsonl` and a trash dir | replaces dest-exists first-run detection; tags live here rather than only in `QD_TAGS`/`DOTFILES_TAGS` |
 | Sync semantics | content-hash compare, plan/apply split, atomic writes, removes go to trash | fixes mtime clobbering from fresh clones; makes `status`/`--dry-run` free |
 | Plugins | Lua tables declared by the root `qd.lua`; the Nushell compiler and brew/scoop ship as built-ins | keeps the core a pure sync pipeline; anything shell- or package-manager-specific is data folded by a plugin |
 | Caching | none | thirteen small modules; add a `[cache]` table later if ever needed |
@@ -101,10 +101,12 @@ Plugins never write or execute anything: `compile` returns file contents and the
 ## `qd` Lua API
 
 - `qd.host` — booleans `darwin`, `ubuntu`, `windows`, `posix`, `wsl`; `qd.host.name`.
-- `qd.tag(name)` — a tag the machine declares about itself: `qd tag add`, which writes
-  `state.toml`, or the `DOTFILES_TAGS` environment variable (comma or space separated),
-  which is folded in on top. Detected facts are never tags — ask `qd.host` for those, so
-  that a tag always means "I said so" and stays removable.
+- `qd.tag(name)` — a tag the machine declares about itself. Three sources, unioned:
+  `qd tag add`, which writes `state.toml` and is the durable one; `QD_TAGS`; and
+  `DOTFILES_TAGS`, the Nushell tool's name for the same thing, kept while machines are
+  still on it and dropped in phase 4 of the migration. Both variables separate on commas
+  or whitespace. Detected facts are never tags — ask `qd.host` for those, so that a tag
+  always means "I said so" and stays removable.
 - `qd.path.home(...)`, `.config(...)`, `.cache(...)` (`~/.dotfiles-cache`), `.app_support(...)`, `.appdata(...)`, `.local_appdata(...)`, `.dotfiles(...)`, `.join(...)`.
 - `qd.list(base, ...)` — append; replaces `%root%`.
 - `qd.path.is_absolute(path)`.

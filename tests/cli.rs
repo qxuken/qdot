@@ -80,6 +80,7 @@ return { enabled = not qd.tag("skip"), path = qd.path.home("other"), brew = { "t
             .args(args)
             .env("HOME", &self.home)
             .env("QD_STATE", &self.state)
+            .env_remove("QD_TAGS")
             .env_remove("DOTFILES_TAGS")
             .env_remove("WSL_DISTRO_NAME")
             .output()
@@ -99,6 +100,7 @@ return { enabled = not qd.tag("skip"), path = qd.path.home("other"), brew = { "t
             .args(args)
             .env("HOME", &self.home)
             .env("QD_STATE", &self.state)
+            .env_remove("QD_TAGS")
             .env_remove("DOTFILES_TAGS")
             .env_remove("WSL_DISTRO_NAME");
         for (k, v) in env {
@@ -263,15 +265,32 @@ fn detected_facts_are_not_tags() {
     assert_eq!(h["wsl"], json!(true), "{out}");
     assert_eq!(h["tags"], json!([]), "wsl must not become a tag: {out}");
 
-    // What the machine does declare still arrives, from either source.
+    // What the machine does declare still arrives, from all three sources, and
+    // separators are whichever of comma or whitespace the shell handed over.
     e.ok(&["tag", "add", "declared"]);
     let (ok, out, _) = e.qd_env(
         &["host"],
-        &[("WSL_DISTRO_NAME", "Ubuntu"), ("DOTFILES_TAGS", "from_env")],
+        &[
+            ("WSL_DISTRO_NAME", "Ubuntu"),
+            ("QD_TAGS", "from_qd, second"),
+            ("DOTFILES_TAGS", "legacy"),
+        ],
     );
     assert!(ok, "{out}");
     let h: serde_json::Value = serde_json::from_str(&out).unwrap();
-    assert_eq!(h["tags"], json!(["declared", "from_env"]), "{out}");
+    assert_eq!(
+        h["tags"],
+        json!(["declared", "from_qd", "legacy", "second"]),
+        "{out}"
+    );
+
+    // A tag from the environment gates a module just as a state tag does.
+    let (ok, out, _) = e.qd_env(&["list"], &[("QD_TAGS", "skip")]);
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("other              (disabled on this host)"),
+        "{out}"
+    );
 }
 
 #[test]

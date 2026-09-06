@@ -79,9 +79,10 @@ impl Host {
     }
 
     /// Build from the real environment. Tags are what the machine declares about
-    /// itself: `tags` from state, plus `DOTFILES_TAGS` (comma or space separated).
-    /// Detected facts stay out of the tag set and are read through `qd.host`
-    /// instead, so that a tag never means two different things.
+    /// itself: `tags` from state, plus `QD_TAGS` and the `DOTFILES_TAGS` the
+    /// Nushell tool used, each comma or whitespace separated. Detected facts stay
+    /// out of the tag set and are read through `qd.host` instead, so that a tag
+    /// never means two different things.
     pub fn detect(
         dotfiles: impl Into<PathBuf>,
         tags: impl IntoIterator<Item = String>,
@@ -89,12 +90,12 @@ impl Host {
         let home = dirs::home_dir().context("cannot determine the home directory")?;
         let mut host = Host::new(Os::current(), home, dotfiles);
         host.tags = tags.into_iter().collect();
-        if let Ok(v) = std::env::var("DOTFILES_TAGS") {
-            host.tags.extend(
-                v.split(|c: char| c == ',' || c.is_whitespace())
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned),
-            );
+        // DOTFILES_TAGS is the Nushell tool's name for this and is still set in
+        // `~/.local.nu` on machines that have not cut over; drop it in phase 4.
+        for var in ["QD_TAGS", "DOTFILES_TAGS"] {
+            if let Ok(v) = std::env::var(var) {
+                host.tags.extend(parse_tags(&v));
+            }
         }
         host.wsl = std::env::var_os("WSL_DISTRO_NAME").is_some();
         if host.os == Os::Linux {
@@ -108,6 +109,14 @@ impl Host {
     pub fn has_tag(&self, tag: &str) -> bool {
         self.tags.contains(tag)
     }
+}
+
+/// Tags as written in an environment variable: separated by commas or whitespace,
+/// so that both `a,b` and a shell list that stringifies to `a b` work.
+fn parse_tags(v: &str) -> impl Iterator<Item = String> + '_ {
+    v.split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
 }
 
 fn read_os_release_id(path: &Path) -> Option<String> {
