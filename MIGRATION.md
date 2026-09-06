@@ -94,9 +94,13 @@ Per machine:
 
 1. Install `qd` (download from Forgejo release or `cargo install --path`), confirm `qd --version`.
 2. `qd init --url ssh://git@drydock9-port1.qxuken.dev/qxuken/dotfiles.git --path ~/dotfiles` into the existing dotfiles path, or point `state.toml` at it if the clone is already there. Copy `master.key` in.
-3. `qd tag add <tag>` for whatever `DOTFILES_TAGS` was set to on that machine.
+3. `qd tag add <tag>` for whatever `DOTFILES_TAGS` was set to on that machine — that
+   writes `state.toml`, which is what you want, though qd also reads `QD_TAGS` and
+   `DOTFILES_TAGS` straight from the environment. Not `wsl`: that one is detected.
 4. `qd state adopt` so existing modules are marked initialized at `setup.version` 1.
 5. `qd status`: must be empty, or list only differences you recognise. Do not proceed if it wants to remove anything unexpected.
+   If the machine has git settings of its own, put them in `~/.gitconfig.local` first —
+   the shared `.gitconfig` includes it last, and the push overwrites `~/.gitconfig`.
 6. `qd push` (all modules), which also compiles. Use `--no-setup` if the setup hooks (fnm, uv, starship, zoxide generators) already ran on this machine, then `qd state adopt`. Check `~/.dotfiles.local.nu` no longer references `dotfiles.nu`.
 7. Replace the aliases in the repo's `config.nu` (`dpha` etc.) with `qd` invocations, or `use` `contrib/qd.nu` from the qd repo which defines `dph`, `dpl`, `dst` and completions.
 8. Open a fresh shell, confirm prompt, completions, and one `qd pull -s "test"` round trip through git.
@@ -106,7 +110,8 @@ Per machine:
 One commit in dotfiles removing: `dotfiles.nu`, `config.nu` (the old `dotfiles ...`
 aliases), every `qd-config.yml`, every `qd-*init*.nu`, `global-config.yml`,
 `.fossil-settings/`. Then trim the root `qd.lua` ignore list back to its four generic
-entries, since the legacy files it hides are gone. Delete `repo.fossil` and `.fslckout` locally, then retire the fossil server at `dotfiles.qxuken.dev`.
+entries, since the legacy files it hides are gone, and drop `DOTFILES_TAGS` from
+`Host::detect` in qd, leaving `QD_TAGS`. Delete `repo.fossil` and `.fslckout` locally, then retire the fossil server at `dotfiles.qxuken.dev`.
 
 Delete `qd state adopt` from qd one release later.
 
