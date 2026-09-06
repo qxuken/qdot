@@ -11,13 +11,17 @@ Copy these into the scratch clone of dotfiles in phase 1:
 
     cp -R migration/dotfiles/ /path/to/dotfiles-scratch/
 
-Notes:
-- The root `ignore` includes `**/qd-config.yml` so the legacy files are not
-  pushed to machines; drop it in phase 4.
-- The root `dotfile.include` still references `dotfiles.nu`; replace with a
-  `use` of `contrib/qd.nu` when the Nushell module is deleted.
-- `lazygit` has an untracked `github_pull_requests.json` in its destination on
-  this machine; add `**/github_pull_requests.json` to its `ignore` if it is
-  state rather than config.
+Applied to the live repo on 2026-09-06; these files are now a reference copy of
+what landed there. Three things changed during that pass:
+
+- The root `ignore` also hides `**/qd-init.nu` and `**/qd-pre-init.nu`, not just
+  `**/qd-config.yml` — they were being copied into destinations, where qd has no
+  use for them. All three go away in phase 4.
+- `lazygit` ignores `**/github_pull_requests.json`; it is state, like `state.yml`.
+- The root `nushell` block now sources the vendored `qd.nu` instead of including
+  `dotfiles.nu`, and no longer sources `config.nu` — see the phase 3 notes in
+  MIGRATION.md for why.
+
+Note:
 - Machines without brew or scoop package managers: Ubuntu appends `xclip` and
   `xsel` via `qd.host.ubuntu`, which needs `/etc/os-release` `ID=ubuntu`.

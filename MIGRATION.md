@@ -1,6 +1,8 @@
 # Migration: dotfiles.nu + fossil → qd + git
 
-Order of operations. Nothing in the live dotfiles repo changes until phase 3; phases 1 and 2 happen against copies.
+Order of operations. Phases 1 and 2 happen against copies; phase 2 then installs the
+resulting history into the live repo, and phase 3 is the first thing to touch the
+machine.
 
 ## Phase 0 — qd is correct (this repo)
 
@@ -19,6 +21,15 @@ Test harness: every test gets a temp dir with `repo/`, `home/`, `state/`; `Host`
 
 ## Phase 1 — convert configs (in a scratch clone of dotfiles)
 
+Status 2026-09-06: done. Every module's `qd show` matches `dotfiles verify-config`
+(dest, brew, scoop, ignore, encrypt, nushell entries, files), a push into a scratch
+HOME applies 175 operations and leaves `status` empty in both directions, all five
+`.age` files decrypt, and the compiled `~/.dotfiles.local.nu` came out byte-identical
+to the one the Nushell tool had generated. Two ignore entries were added during
+verification: `**/qd-init.nu` / `**/qd-pre-init.nu` on the root (they were being
+copied into destinations, where qd has no use for them) and
+`**/github_pull_requests.json` on lazygit (state, like `state.yml`).
+
 1. Clone the current dotfiles repo to a scratch directory. `master.key` is copied in by hand.
 2. Copy the already converted files from `migration/dotfiles/` (root plus all 13 modules) into the scratch clone. Keep the YAML and `qd-*init*.nu` files in place for now; the root `ignore` hides `qd-config.yml` from qd. Note the Nushell tool does *not* ignore `qd.lua`: its next `push` would copy the Lua files into destinations, harmlessly. Do not run the old tool from the scratch clone.
 3. For each module compare `qd show <module>` against the Nushell resolution. Fix the Lua until they match.
@@ -27,6 +38,13 @@ Test harness: every test gets a temp dir with `repo/`, `home/`, `state/`; `Host`
 6. `qd status` from the scratch clone against the real `HOME` should list only files that already differ today. Anything else is a conversion bug.
 
 ## Phase 2 — fossil → git on Forgejo
+
+Status 2026-09-06: done. Note `~/dotfiles` already held a `.git` — the old
+`fossil git export` mirror, stale at 62 of 74 check-ins, autopushing to
+github.com/qxuken/dotfiles. It was backed up and replaced by the fresh export
+below, so the two histories have different SHAs and the GitHub mirror is now
+orphaned. Forgejo has 76 commits: 74 check-ins, the `.gitignore` fix, and the
+`qd.lua` files. The repo was created by push-to-create rather than by hand.
 
 1. Create `qxuken/dotfiles` on Forgejo, empty, no README.
 2. Export:
@@ -46,6 +64,26 @@ Fossil stays untouched and remains the source of truth until phase 3 is done on 
 
 Order: this macOS first, then Ubuntu and WSL, Windows last.
 
+Status 2026-09-06: macOS done. Ubuntu, WSL and Windows still run the Nushell tool
+against fossil. **The two histories are now forked**: the neovim and `.gitconfig`
+drift below was pulled into git only, and anything committed from another machine
+lands in fossil only. Cut the rest over before the gap grows, or re-run the phase 1
+comparison there first.
+
+Two things worth knowing before the next machine:
+
+- The Nushell tool copied with `cp --update`, so any destination file edited after
+  the last push had silently stopped syncing. On macOS that was four neovim files
+  and `~/.gitconfig` (git-lfs plus credential-manager sections), drifting for
+  months. qd compares content and would have overwritten all of them. **Run
+  `qd status` and `qd status --pull` and reconcile before the first `qd push`.**
+- `qd.nu` is vendored at the repo root and is `source`d, not `use`d — `use` would
+  namespace the aliases as `qd dph`, which collides with the binary. It replaces
+  `config.nu` in the root config's `nushell`; `config.nu` keeps the old
+  `dotfiles ...` aliases for machines that have not cut over, reaching them through
+  `global-config.yml`. `dpha`/`dpla` are gone, `dph`/`dpl` already act on every
+  module.
+
 Per machine:
 
 1. Install `qd` (download from Forgejo release or `cargo install --path`), confirm `qd --version`.
@@ -59,12 +97,19 @@ Per machine:
 
 ## Phase 4 — cleanup, after the last machine
 
-One commit in dotfiles removing: `dotfiles.nu`, every `qd-config.yml`, every `qd-*init*.nu`, `global-config.yml`, `.fossil-settings/`. Delete `repo.fossil` and `.fslckout` locally, then retire the fossil server at `dotfiles.qxuken.dev`.
+One commit in dotfiles removing: `dotfiles.nu`, `config.nu` (the old `dotfiles ...`
+aliases), every `qd-config.yml`, every `qd-*init*.nu`, `global-config.yml`,
+`.fossil-settings/`. Then trim the root `qd.lua` ignore list back to its four generic
+entries, since the legacy files it hides are gone. Delete `repo.fossil` and `.fslckout` locally, then retire the fossil server at `dotfiles.qxuken.dev`.
 
 Delete `qd state adopt` from qd one release later.
 
 ## Rollback
 
 - Before phase 3 on a machine: nothing to undo, the Nushell tool still works and fossil is unchanged.
-- During phase 3: `fossil update` restores the tree, the old aliases still exist until step 7, and qd's trash holds anything it removed.
+- During phase 3: `fossil revert` restores the tree, the old aliases still exist until
+  step 7, and qd's trash holds anything it removed. `repo.fossil` and `.fslckout` are
+  still in place and gitignored, so the fossil checkout keeps working alongside git.
+  The replaced GitHub mirror `.git` is reconstructible at any time with
+  `fossil git export` into a fresh directory.
 - After phase 4: git history has the YAML if the Lua ever needs cross-checking.

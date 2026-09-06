@@ -8,6 +8,6 @@ return {
   path   = path,
   brew   = { "lazygit" },
   scoop  = { { name = "lazygit", bucket = "extras" } },
-  ignore = { "**/state.yml" },
+  ignore = { "**/state.yml", "**/github_pull_requests.json" },
   nushell = { source = { "config.nu" } },
 }
