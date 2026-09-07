@@ -471,7 +471,7 @@ pub fn run() -> Result<()> {
                 println!("cloning {url} into {}", root.display());
                 SystemGit.clone(&url, &root)?;
             }
-            let root = std::fs::canonicalize(&root)?;
+            let root = crate::path::canonicalize(&root)?;
             ctx.state.machine.repo = Some(root.clone());
             ctx.save()?;
             ctx.repo_flag = Some(root.clone());
@@ -554,11 +554,11 @@ pub fn run() -> Result<()> {
                 );
             }
             StateCmd::SetRepo { path } => {
-                ctx.state.machine.repo = Some(std::fs::canonicalize(&path)?);
+                ctx.state.machine.repo = Some(crate::path::canonicalize(&path)?);
                 ctx.save()?;
             }
             StateCmd::SetIdentity { path } => {
-                ctx.state.machine.identity = Some(std::fs::canonicalize(&path)?);
+                ctx.state.machine.identity = Some(crate::path::canonicalize(&path)?);
                 ctx.save()?;
             }
         },

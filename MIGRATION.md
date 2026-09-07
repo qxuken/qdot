@@ -64,11 +64,42 @@ Fossil stays untouched and remains the source of truth until phase 3 is done on 
 
 Order: this macOS first, then Ubuntu and WSL, Windows last.
 
-Status 2026-09-06: macOS done. Ubuntu, WSL and Windows still run the Nushell tool
-against fossil. **The two histories are now forked**: the neovim and `.gitconfig`
-drift below was pulled into git only, and anything committed from another machine
-lands in fossil only. Cut the rest over before the gap grows, or re-run the phase 1
-comparison there first.
+Status 2026-09-07: macOS, WSL (Ubuntu-24.04 on the Windows box) and Windows done.
+Only the Ubuntu machine still runs the Nushell tool against fossil. **The two
+histories are now forked**: the neovim and `.gitconfig` drift below was pulled into
+git only, Windows' `wezterm/config/tabbar.lua` drift went to git only (commit
+`7b61db8`), and anything committed from another machine lands in fossil only. Cut
+Ubuntu over before the gap grows, or re-run the phase 1 comparison there first.
+
+What the WSL and Windows cutovers taught (2026-09-07):
+
+- Neither machine set `DOTFILES_TAGS`, so step 3 was a no-op on both. Both fossil
+  checkouts sat at the same May 24 check-in, so `qd status` from a scratch clone
+  listed exactly the macOS drift already in git (four neovim files, `keybinds.nu`,
+  `.gitconfig`). The drifted destination files were diffed against the fossil tree
+  first to prove they carried no local edits; WSL had none, Windows had two:
+  `lazy-lock.json` (Jul 15, older than the macOS version in git, so git won) and
+  `tabbar.lua` (Feb 9, only edited copy anywhere, so `qd pull wezterm -s` first,
+  then `qd push`).
+- Converting the tree in place: `git clone --no-checkout` to a temp dir, move its
+  `.git` into `~/dotfiles`, `git reset --hard`, then `git clean -n`. The fossil tree
+  leaves files git HEAD has since deleted (`neovim/.../neotest.lua`) as untracked
+  leftovers, and qd scans the filesystem, not git, so they mask the removal until
+  `git clean -f` drops them.
+- Windows: scoop's git ships `core.autocrlf = true` in its system gitconfig, which
+  checks everything out CRLF and makes every file "differ". `git config
+  core.autocrlf false` in the repo before the reset fixes it. Fossil stored a fair
+  number of `.lua`/`.nu`/`.toml` files with CRLF already, so a `.gitattributes` and
+  a normalising commit is a candidate for phase 4. The fossil checkout file on
+  Windows is `_FOSSIL_`, not `.fslckout`; it went into `.git/info/exclude`.
+- Windows: `std::fs::canonicalize` yields `\\?\C:\...`, which lands in
+  `state.toml` and in the compiled `~/.dotfiles.local.nu` `source` line. Nushell
+  copes, but `dunce::canonicalize` (or stripping the prefix) would be cleaner.
+- Machine-local git settings moved to `~/.gitconfig.local`: WSL had the linuxbrew
+  credential-manager helper plus dev.azure.com/drydock9 credential sections,
+  Windows the drydock9 credential section and `[gui] recentrepo`.
+- Backups of both pre-cutover trees: `~/qd-mig-backup/before` on WSL and the
+  session scratchpad `before/` on Windows; the fossil checkouts still work too.
 
 Three things worth knowing before the next machine:
 

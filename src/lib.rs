@@ -8,6 +8,7 @@ pub mod host;
 pub mod journal;
 pub mod lua;
 pub mod packages;
+pub mod path;
 pub mod plan;
 pub mod plugin;
 pub mod repo;

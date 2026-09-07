@@ -139,5 +139,6 @@ pub fn find_root(explicit: Option<&Path>, from_state: Option<&Path>) -> Result<P
 }
 
 fn canonical(p: &Path) -> Result<PathBuf> {
-    std::fs::canonicalize(p).with_context(|| format!("repo path {} does not exist", p.display()))
+    crate::path::canonicalize(p)
+        .with_context(|| format!("repo path {} does not exist", p.display()))
 }
