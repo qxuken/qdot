@@ -247,8 +247,8 @@ Git wraps the pipeline: `push -s` fetches and fast-forwards before discovery; `p
 `status`, `sync`, `apply`, `compile` and `add_module`: every operation,
 returning data. `cli.rs` prints over it. The `cli` feature (default)
 adds the binary, clap, ureq and self-replace; off, the crate is the
-library alone. Published as `qdot` to the drydock9 cargo registry by CI
-on a tag, and to crates.io by hand.
+library alone. Published as `qdot`, MIT, to the drydock9 cargo registry
+and to crates.io by CI on a tag.
 
 ## Crates
 

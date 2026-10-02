@@ -3,17 +3,18 @@ name = "qdot"
 version = "0.2.0"
 edition = "2024"
 description = "Dotfiles manager: modules configured in Lua, secrets encrypted with age, history in git"
+license = "MIT"
 repository = "https://drydock9.qxuken.dev/qxuken/qd"
 readme = "README.md"
 keywords = ["dotfiles", "lua", "age"]
 categories = ["command-line-utilities", "config"]
-# drydock9 by CI on a tag; crates.io by hand (`cargo publish --registry
-# crates-io`), where `qd` is another crate's name, hence `qdot` — the
-# library and the binary are `qd` either way.
+# drydock9 and crates.io, both by CI on a tag; on crates.io `qd` is
+# another crate's name, hence `qdot` — the library and the binary are
+# `qd` either way.
 publish = ["drydock9", "crates-io"]
 # What a published crate carries: the code, its built-in plugins and the
 # docs. Never `migration/`, which holds the author's own module files.
-include = ["/src/**", "/contrib/**", "/Cargo.toml", "/Cargo.lock", "/README.md", "/DESIGN.md"]
+include = ["/src/**", "/contrib/**", "/Cargo.toml", "/Cargo.lock", "/README.md", "/DESIGN.md", "/LICENSE"]
 
 [lib]
 name = "qd"

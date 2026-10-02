@@ -235,3 +235,12 @@ jobs:
           # Forgejo wants the Bearer scheme in it.
           CARGO_REGISTRIES_DRYDOCK9_TOKEN: Bearer ${{ secrets.PACKAGES_TOKEN }}
         run: cargo publish --registry drydock9
+
+      # crates.io: the same crate, by the token kept for it (the
+      # CRATES_IO_TOKEN secret: publish-new and publish-update, `qdot`
+      # only). A version published there stays forever — yanked, never
+      # deleted.
+      - name: cargo publish (crates.io)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: cargo publish --registry crates-io
