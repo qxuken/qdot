@@ -365,3 +365,24 @@ fn self_update_reports_asset_name_and_handles_unreachable_api() {
     let err = qd::update::self_update(&src, true).unwrap_err();
     assert!(format!("{err:#}").contains("fetching"), "{err:#}");
 }
+
+/// `qd add` writes NAME/qd.lua naming the directory by its place under
+/// the home, then pulls it in — ignored globs left out — and refuses a
+/// module that exists.
+#[test]
+fn add_writes_a_module_and_pulls_it_in() {
+    let env = Env::new();
+    let dir = env.home.join(".config/tool");
+    write(&dir.join("a.toml"), "a = 1\n");
+    write(&dir.join("cache/x"), "junk");
+    let (ok, out, err) = env.qd(&["add", "tool", dir.to_str().unwrap(), "--ignore", "cache/**"]);
+    assert!(ok, "{out}{err}");
+    assert_eq!(
+        read(&env.repo.join("tool/qd.lua")),
+        "local qd = require(\"qd\")\n\nreturn {\n  path = qd.path.home(\".config\", \"tool\"),\n  ignore = { \"cache/**\" },\n}\n"
+    );
+    assert_eq!(read(&env.repo.join("tool/a.toml")), "a = 1\n");
+    assert!(!env.repo.join("tool/cache").exists(), "ignored");
+    let (ok, _, err) = env.qd(&["add", "tool", dir.to_str().unwrap()]);
+    assert!(!ok && err.contains("exists already"), "{err}");
+}

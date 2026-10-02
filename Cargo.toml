@@ -1,24 +1,50 @@
 [package]
-name = "qd"
-version = "0.1.2"
+name = "qdot"
+version = "0.2.0"
 edition = "2024"
+description = "Dotfiles manager: modules configured in Lua, secrets encrypted with age, history in git"
+repository = "https://drydock9.qxuken.dev/qxuken/qd"
+readme = "README.md"
+keywords = ["dotfiles", "lua", "age"]
+categories = ["command-line-utilities", "config"]
+# drydock9 by CI on a tag; crates.io by hand (`cargo publish --registry
+# crates-io`), where `qd` is another crate's name, hence `qdot` — the
+# library and the binary are `qd` either way.
+publish = ["drydock9", "crates-io"]
+# What a published crate carries: the code, its built-in plugins and the
+# docs. Never `migration/`, which holds the author's own module files.
+include = ["/src/**", "/contrib/**", "/Cargo.toml", "/Cargo.lock", "/README.md", "/DESIGN.md"]
+
+[lib]
+name = "qd"
+
+[[bin]]
+name = "qd"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[features]
+default = ["cli"]
+# The `qd` binary: argument parsing and self-update. Off, qd is the
+# library alone (`qd::Session`).
+cli = ["dep:clap", "dep:ureq", "dep:self-replace", "dep:sha2"]
 
 [dependencies]
 age = "0.12.1"
 anyhow = "1.0.104"
 blake3 = "1.8.7"
-clap = { version = "4.6.6", features = ["derive", "env"] }
+clap = { version = "4.6.6", features = ["derive", "env"], optional = true }
 dirs = "6.0.0"
 dunce = "1.0.5"
 globset = "0.4.20"
 jiff = "0.2.35"
 mlua = { version = "0.12.1", features = ["lua55", "vendored", "serialize", "error-send"] }
-self-replace = "1.5.0"
+self-replace = { version = "1.5.0", optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-sha2 = "0.11.0"
+sha2 = { version = "0.11.0", optional = true }
 toml = "1.1.5"
-ureq = { version = "3.4.0", features = ["json"] }
+ureq = { version = "3.4.0", features = ["json"], optional = true }
 walkdir = "2.5.0"
 
 [dev-dependencies]

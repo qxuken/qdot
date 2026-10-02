@@ -1716,8 +1716,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "qd"
-version = "0.1.2"
+name = "qdot"
+version = "0.2.0"
 dependencies = [
  "age",
  "anyhow",

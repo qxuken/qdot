@@ -219,3 +219,19 @@ jobs:
               --upload-file "$f" "$PACKAGE_URL/$VERSION/$name"
           done
           echo "published qd $VERSION to $PACKAGE_URL/$VERSION/"
+
+      # The library, `qdot` (lib `qd`), to the cargo registry, for a
+      # program that links qd (kawoosh's dotfiles pane). `cargo publish`
+      # verifies by building the packaged crate, so a toolchain first.
+      - name: Install toolchain
+        run: |
+          set -eu
+          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "${CARGO_HOME:-$HOME/.cargo}/bin" >> "$GITHUB_PATH"
+
+      - name: cargo publish
+        env:
+          # cargo sends the token verbatim as the Authorization header;
+          # Forgejo wants the Bearer scheme in it.
+          CARGO_REGISTRIES_DRYDOCK9_TOKEN: Bearer ${{ secrets.PACKAGES_TOKEN }}
+        run: cargo publish --registry drydock9

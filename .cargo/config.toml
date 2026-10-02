@@ -1,0 +1,9 @@
+# The Forgejo cargo registry the `qdot` crate publishes to, as kui's
+# crates do (`publish = ["drydock9", "crates-io"]` in Cargo.toml). The
+# name is local: a consumer names the table as they like and depends on
+# `qdot = { version = "...", registry = "drydock9" }`. Publishing needs a
+# token: `cargo login --registry drydock9` and paste `Bearer <token>` (a
+# personal access token with write:packages), or set
+# CARGO_REGISTRIES_DRYDOCK9_TOKEN="Bearer <token>" as CI does.
+[registries.drydock9]
+index = "sparse+https://drydock9.qxuken.dev/api/packages/qxuken/cargo/"

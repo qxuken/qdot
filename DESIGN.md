@@ -230,6 +230,7 @@ last_push = 2026-09-04T10:12:00Z
 | `qd show [module] [--all] [--format json\|toml]` | resolved config, for verifying against old semantics |
 | `qd list`, `qd host` | modules and destinations; detected host |
 | `qd packages install\|upgrade\|list [--manager <plugin>] [--dry-run]` | first available package plugin unless named |
+| `qd add NAME PATH [--ignore GLOB]… [--no-pull]` | write `NAME/qd.lua` (`path` as `qd.path.home(…)` under the home), then pull it in |
 | `qd compile [--dry-run]` | run every plugin's compile step (built-in: the two Nushell files) |
 | `qd remote pull\|push <msg>\|diff` | via `Vcs` trait (system git) |
 | `qd tag list\|add\|rm` | machine tags in state |
@@ -239,6 +240,15 @@ last_push = 2026-09-04T10:12:00Z
 | `qd __complete modules\|all-modules` | for `contrib/qd.nu` |
 
 Git wraps the pipeline: `push -s` fetches and fast-forwards before discovery; `pull -s` commits and pushes after apply.
+
+## Library
+
+`qd::Session` (`src/session.rs`) is the state and the repo, with
+`status`, `sync`, `apply`, `compile` and `add_module`: every operation,
+returning data. `cli.rs` prints over it. The `cli` feature (default)
+adds the binary, clap, ureq and self-replace; off, the crate is the
+library alone. Published as `qdot` to the drydock9 cargo registry by CI
+on a tag, and to crates.io by hand.
 
 ## Crates
 

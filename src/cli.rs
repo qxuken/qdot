@@ -5,16 +5,14 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
-use crate::apply::Applier;
 use crate::compile;
 use crate::config::{ModuleView, RootConfig};
-use crate::crypto::{Crypto, IDENTITY_FILE, RECIPIENTS_FILE};
-use crate::host::Host;
+use crate::crypto::Crypto;
 use crate::journal::Journal;
 use crate::packages::{self, Action};
-use crate::plan::{Direction, Plan, PlanOpts, plan};
-use crate::repo::{Repo, find_root};
-use crate::state::{State, state_dir};
+use crate::plan::{Direction, Plan, PlanOpts};
+use crate::repo::Repo;
+use crate::session::{Session, plan_modules};
 use crate::update;
 use crate::vcs::{SystemGit, Vcs};
 
@@ -50,6 +48,17 @@ enum Cmd {
         pull: bool,
         #[arg(long)]
         json: bool,
+    },
+    /// Start keeping a directory: write NAME/qd.lua with its path, then pull it in.
+    Add {
+        name: String,
+        path: PathBuf,
+        /// Globs relative to the path that stay out of the repo.
+        #[arg(long)]
+        ignore: Vec<String>,
+        /// Only write qd.lua; do not pull.
+        #[arg(long)]
+        no_pull: bool,
     },
     /// Repo → machine. All syncable modules unless names are given.
     Push {
@@ -236,56 +245,9 @@ struct ShowAll<'a> {
     disabled: &'a [String],
 }
 
-struct Ctx {
-    state_dir: PathBuf,
-    state: State,
-    repo_flag: Option<PathBuf>,
-}
-
-impl Ctx {
-    fn root(&self) -> Result<PathBuf> {
-        find_root(
-            self.repo_flag.as_deref(),
-            self.state.machine.repo.as_deref(),
-        )
-    }
-
-    fn host(&self) -> Result<Host> {
-        Host::detect(self.root()?, self.state.machine.tags.iter().cloned())
-    }
-
-    fn repo(&self) -> Result<Repo> {
-        Repo::load(self.host()?)
-    }
-
-    fn crypto(&self, root: &Path) -> Result<Crypto> {
-        let identity = self
-            .state
-            .machine
-            .identity
-            .clone()
-            .unwrap_or_else(|| root.join(IDENTITY_FILE));
-        Crypto::load(&root.join(RECIPIENTS_FILE), Some(&identity))
-    }
-
-    fn journal(&self) -> Journal {
-        Journal::new(&self.state_dir)
-    }
-
-    fn save(&self) -> Result<()> {
-        self.state.save_to(&self.state_dir)
-    }
-}
-
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
-    let state_dir = state_dir()?;
-    let state = State::load_from(&state_dir)?;
-    let mut ctx = Ctx {
-        state_dir,
-        state,
-        repo_flag: cli.repo,
-    };
+    let mut ctx = Session::open(cli.repo)?;
 
     match cli.cmd {
         Cmd::Host => println!("{}", serde_json::to_string_pretty(&ctx.host()?)?),
@@ -424,6 +386,25 @@ pub fn run() -> Result<()> {
                 } else {
                     println!("nothing to commit");
                 }
+            }
+        }
+        Cmd::Add {
+            name,
+            path,
+            ignore,
+            no_pull,
+        } => {
+            let path =
+                crate::path::canonicalize(&path).with_context(|| format!("{}", path.display()))?;
+            let file = ctx.add_module(&name, &path, &ignore)?;
+            println!("wrote {}", file.display());
+            if !no_pull {
+                let done = ctx.sync(
+                    &[name],
+                    Direction::Pull,
+                    crate::session::SyncOpts::default(),
+                )?;
+                println!("applied {} operations (run {})", done.applied, done.run);
             }
         }
         Cmd::Compile { dry_run } => {
@@ -638,63 +619,25 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn plan_modules<'r>(
-    repo: &'r Repo,
-    names: &[String],
-    direction: Direction,
-    crypto: &Crypto,
-    state: &State,
-    opts: PlanOpts,
-) -> Result<Vec<(&'r crate::config::Module, Plan)>> {
-    let selected: Vec<&crate::config::Module> = if names.is_empty() {
-        repo.syncable().collect()
-    } else {
-        names
-            .iter()
-            .map(|n| {
-                let m = repo.module(n)?;
-                if m.dest.is_none() {
-                    bail!("module `{n}` has no `path` and cannot be synced");
-                }
-                Ok(m)
-            })
-            .collect::<Result<_>>()?
-    };
-    selected
-        .into_iter()
-        .map(|m| Ok((m, plan(m, direction, crypto, state, opts)?)))
-        .collect()
-}
-
 /// Apply every plan under one run id and return it, so the compile step can
 /// join the same run and `undo` reverts both together.
 fn apply_plans(
-    ctx: &mut Ctx,
+    ctx: &mut Session,
     _repo: &Repo,
     crypto: &Crypto,
     plans: &[(&crate::config::Module, Plan)],
 ) -> Result<String> {
-    let journal = ctx.journal();
-    let state_dir = ctx.state_dir.clone();
-    let mut applier = Applier::new(crypto, &journal, &mut ctx.state, &state_dir);
-    let mut total = 0;
-    for (m, p) in plans {
-        if p.is_empty() {
-            continue;
-        }
-        let report = applier.apply(m, p)?;
-        total += report.applied;
-    }
+    let (run, total) = ctx.apply(crypto, plans)?;
     if total > 0 || plans.iter().any(|(_, p)| p.first_run) {
-        println!("applied {total} operations (run {})", applier.run);
+        println!("applied {total} operations (run {run})");
     } else {
         println!("nothing to do");
     }
-    Ok(applier.run)
+    Ok(run)
 }
 
-fn run_compile(ctx: &Ctx, repo: &Repo, run: &str) -> Result<()> {
-    let written = compile::apply(repo, &ctx.journal(), run)?;
+fn run_compile(ctx: &Session, repo: &Repo, run: &str) -> Result<()> {
+    let written = ctx.compile(repo, run)?;
     for p in &written {
         println!("compiled {}", p.display());
     }

@@ -9,6 +9,7 @@ encrypted with age, history in git.
     qd pull -s "message"   # …then commit and push
     qd undo                # revert the last apply from the trash
     qd init --url ssh://…  # new machine
+    qd add NAME PATH       # start keeping a directory as module NAME
 
 Every module is a directory in the dotfiles repo with a `qd.lua` that returns a
 table; see `contrib/qd.d.lua` for the schema and `DESIGN.md` for how it works.
@@ -69,6 +70,29 @@ replaces. Detected facts are not tags — a config asks `qd.host.wsl` or
 
 `master.rec` (recipients) is committed in the repo root; `master.key` is not
 and lives next to it or wherever `qd state set-identity` points.
+
+## As a library
+
+The crate is `qdot` (`qd` is another crate's name on crates.io); the
+library and the binary are `qd`. Without its default `cli` feature it is
+the library alone — no clap, ureq or self-replace — and `qd::Session`
+does what the binary does, returning data and printing nothing:
+
+```toml
+qdot = { version = "0.2", default-features = false, registry = "drydock9" }
+```
+
+```rust
+let mut s = qd::Session::open(None)?;            // QD_STATE, the recorded repo
+let plans = s.status(&[], qd::plan::Direction::Push)?;
+let done = s.sync(&["helix".into()], qd::plan::Direction::Pull, qd::SyncOpts::default())?;
+s.add_module("kawoosh", &home.join(".config/kawoosh"), &["fonts/**".into()])?;
+```
+
+A program linking it shares `state.toml`, the journal and the trash with
+the `qd` on the PATH, so it should hold to `qd::VERSION` matching that
+binary's, and run the binary when they differ. kawoosh's dotfiles pane
+does.
 
 ## Build
 
