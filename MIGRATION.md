@@ -138,6 +138,15 @@ Per machine:
 
 ## Phase 4 — cleanup, after the last machine
 
+Status 2026-10-08: done early in dotfiles (`b89c890`), before Ubuntu, since
+Ubuntu reads the fossil server and git deletions never reach it. Removed the
+files below, the misspelled `.gitattribues`, the macOS `repo.fossil` (to the
+Trash) and the old tool's `qd-init.nu` / `qd-pre-init.nu` copies left in
+destinations, which the trimmed ignore list now lets `qd push` delete. Still
+waiting on the Ubuntu cutover: dropping `DOTFILES_TAGS` from `Host::detect`
+(step 3 there still reads it), retiring the fossil server, and the `.gitignore`
+entries for `repo.fossil` / `.fslckout` / `.mirror_state`.
+
 One commit in dotfiles removing: `dotfiles.nu`, `config.nu` (the old `dotfiles ...`
 aliases), every `qd-config.yml`, every `qd-*init*.nu`, `global-config.yml`,
 `.fossil-settings/`. Then trim the root `qd.lua` ignore list back to its four generic
