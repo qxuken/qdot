@@ -90,6 +90,7 @@ function print(...) end
 ---@field version integer|nil                 # bump to rerun hooks on every machine
 ---@field before fun(m: qd.ModuleView)|nil    # before the first apply
 ---@field after fun(m: qd.ModuleView)|nil     # after the first apply
+---@field push fun(m: qd.ModuleView)|nil      # after every push, even with nothing to copy
 
 -- Core fields. Any other key must be the name of a loaded plugin.
 ---@class qd.Module
@@ -125,7 +126,7 @@ function print(...) end
 ---@field encrypt string[]
 ---@field files { src: string, dest: string }[]
 ---@field include string[]
----@field setup { version: integer, before: boolean, after: boolean }|nil
+---@field setup { version: integer, before: boolean, after: boolean, push: boolean }|nil
 ---@field [string] any
 
 ---@class qd.RootView

@@ -305,7 +305,7 @@ fn compile_results_are_checked() {
     assert!(err.contains("must return a list of"), "{err}");
     let err = bad(r#"qd.write("/x", "y")"#);
     assert!(
-        err.contains("setup.before or setup.after"),
+        err.contains("setup.before, setup.after or setup.push"),
         "plugins stay pure: {err}"
     );
 

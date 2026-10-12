@@ -1,7 +1,7 @@
 //! The Lua host: a sandboxed VM per config file plus the `qd` API table.
 //!
 //! Two phases share one VM. During *load* the file is evaluated to a table and
-//! only pure helpers are usable. During *hook* the `setup.before` / `setup.after`
+//! only pure helpers are usable. During *hook* the `setup.before` / `setup.after` / `setup.push`
 //! functions run and `qd.run`, `qd.exec`, `qd.write` become callable. Plugin
 //! functions (`resolve`, `compile`, `packages.*`) run in the load phase, so
 //! they stay pure and the core does the writing.
@@ -57,6 +57,7 @@ pub struct Hooks {
     lua: Lua,
     before: Option<Function>,
     after: Option<Function>,
+    push: Option<Function>,
 }
 
 impl Hooks {
@@ -74,12 +75,20 @@ impl Hooks {
         self.after.is_some()
     }
 
+    pub fn has_push(&self) -> bool {
+        self.push.is_some()
+    }
+
     pub fn run_before<A: Serialize>(&self, arg: &A) -> Result<()> {
         self.call(self.before.as_ref(), "setup.before", arg)
     }
 
     pub fn run_after<A: Serialize>(&self, arg: &A) -> Result<()> {
         self.call(self.after.as_ref(), "setup.after", arg)
+    }
+
+    pub fn run_push<A: Serialize>(&self, arg: &A) -> Result<()> {
+        self.call(self.push.as_ref(), "setup.push", arg)
     }
 
     fn call<A: Serialize>(&self, f: Option<&Function>, what: &str, arg: &A) -> Result<()> {
@@ -119,7 +128,7 @@ pub fn load_file(host: &Host, path: &Path) -> Result<Loaded> {
         ),
     };
 
-    let (before, after) =
+    let (before, after, push) =
         take_hooks(&table).with_context(|| format!("{}: bad `setup`", path.display()))?;
     let plugins =
         take_plugins(&table).with_context(|| format!("{}: bad `plugins`", path.display()))?;
@@ -135,7 +144,12 @@ pub fn load_file(host: &Host, path: &Path) -> Result<Loaded> {
 
     Ok(Loaded {
         raw,
-        hooks: Hooks { lua, before, after },
+        hooks: Hooks {
+            lua,
+            before,
+            after,
+            push,
+        },
         plugins,
     })
 }
@@ -195,13 +209,15 @@ fn take_plugins(table: &Table) -> Result<Option<Table>> {
     }
 }
 
-fn take_hooks(table: &Table) -> Result<(Option<Function>, Option<Function>)> {
+type HookFns = (Option<Function>, Option<Function>, Option<Function>);
+
+fn take_hooks(table: &Table) -> Result<HookFns> {
     let setup: Value = table.get("setup")?;
     let Value::Table(setup) = setup else {
-        return Ok((None, None));
+        return Ok((None, None, None));
     };
-    let mut out = [None, None];
-    for (i, key) in ["before", "after"].into_iter().enumerate() {
+    let mut out = [None, None, None];
+    for (i, key) in ["before", "after", "push"].into_iter().enumerate() {
         match setup.get::<Value>(key)? {
             Value::Nil => {}
             Value::Function(f) => {
@@ -214,8 +230,8 @@ fn take_hooks(table: &Table) -> Result<(Option<Function>, Option<Function>)> {
             ),
         }
     }
-    let [before, after] = out;
-    Ok((before, after))
+    let [before, after, push] = out;
+    Ok((before, after, push))
 }
 
 /// A fresh sandbox with the `qd` API and the instruction budget installed.
@@ -520,7 +536,7 @@ fn ensure_hook_phase(lua: &Lua, fname: &str) -> mlua::Result<()> {
     match lua.app_data_ref::<Phase>().map(|p| *p) {
         Some(Phase::Hook) => Ok(()),
         _ => Err(mlua::Error::runtime(format!(
-            "qd.{fname} can only be called from setup.before or setup.after"
+            "qd.{fname} can only be called from setup.before, setup.after or setup.push"
         ))),
     }
 }

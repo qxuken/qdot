@@ -186,7 +186,7 @@ impl Session {
         let mut applier = Applier::new(crypto, &journal, &mut self.state, &state_dir);
         let mut total = 0;
         for (m, p) in plans {
-            if p.is_empty() {
+            if p.is_empty() && !p.push_hook {
                 continue;
             }
             total += applier.apply(m, p)?.applied;

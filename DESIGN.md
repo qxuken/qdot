@@ -52,6 +52,7 @@ return {
     version = 1,                                   -- bump to rerun on every machine
     before  = function(m) end,                     -- runs before first apply
     after   = function(m) qd.run("fnm", "install", "--lts") end,
+    push    = function(m) end,                     -- runs after every push, even with nothing to copy
   },
 }
 ```
@@ -149,7 +150,7 @@ repo tree      ──► Discover */qd.lua + root qd.lua
 root qd.lua    ──► Plugins (declared, or built-in nushell/brew/scoop)
 Host + files   ──► Lua load (pure) ──► plugin.resolve per key ──► Module { src, dest, globs, files, include, ext, hooks }
 Module         ──► Planner: scan src, scan dest, diff by content hash ──► Plan { first_run, ops }
-Plan           ──► status / --dry-run (print)   |   Apply (fs + age) ──► setup.before / setup.after
+Plan           ──► status / --dry-run (print)   |   Apply (fs + age) ──► setup.before / setup.after / setup.push
 Modules        ──► plugin.compile ──► Output { path, content } ──► diff, atomic write, journal (same run)
 Modules        ──► plugin.packages.* ──► argv lists ──► print / run
 ```
@@ -192,6 +193,7 @@ Apply rules:
 - Temp file in target dir + rename.
 - Recipients/identities loaded once per run.
 - `setup.before` runs before ops, `setup.after` after, only when `first_run`.
+- `setup.push` runs after both on every push of the module, including one with nothing to copy, but not on pull, `--dry-run` or `--no-setup`. It is for state derived from the machine rather than the repo (tool prefixes, caches); `status` does not count it as a pending change.
 
 First-run rule (`first_run = true` when any holds):
 - dest path missing

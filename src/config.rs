@@ -44,7 +44,7 @@ pub struct RawFilePair {
     pub enabled: Option<bool>,
 }
 
-/// `before` / `after` are functions and are pulled out by the Lua host before
+/// `before` / `after` / `push` are functions and are pulled out by the Lua host before
 /// serde sees the table, so only `version` remains here.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -110,6 +110,7 @@ pub struct Setup {
     pub version: u32,
     pub before: bool,
     pub after: bool,
+    pub push: bool,
 }
 
 pub struct Module {
@@ -234,11 +235,13 @@ impl Module {
                 version: s.version.unwrap_or(1),
                 before: hooks.has_before(),
                 after: hooks.has_after(),
+                push: hooks.has_push(),
             }),
-            None if hooks.has_before() || hooks.has_after() => Some(Setup {
+            None if hooks.has_before() || hooks.has_after() || hooks.has_push() => Some(Setup {
                 version: 1,
                 before: hooks.has_before(),
                 after: hooks.has_after(),
+                push: hooks.has_push(),
             }),
             None => None,
         };

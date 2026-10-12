@@ -60,6 +60,9 @@ pub struct Plan {
     /// Setup hooks will run: dest missing, no state, version bump, or --force.
     pub first_run: bool,
     pub first_run_reason: Option<String>,
+    /// `setup.push` will run: every push of a module that has one, unless
+    /// `--no-setup`. Not a pending change, so `is_empty` ignores it.
+    pub push_hook: bool,
     pub ops: Vec<Op>,
     /// Removes that `--no-remove` held back.
     pub skipped_removes: Vec<PathBuf>,
@@ -246,6 +249,7 @@ pub fn plan(
         Direction::Push => first_run(module, &dest, state, opts.force, opts.no_setup),
         Direction::Pull => (false, None),
     };
+    let push_hook = direction == Direction::Push && module.hooks.has_push() && !opts.no_setup;
 
     Ok(Plan {
         module: module.name.clone(),
@@ -253,6 +257,7 @@ pub fn plan(
         dest,
         first_run,
         first_run_reason,
+        push_hook,
         ops,
         skipped_removes,
     })

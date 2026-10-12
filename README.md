@@ -48,6 +48,10 @@ stderr, `print` included, so `qd show --format json` stays parseable. See the
 Plugins section of `DESIGN.md` for the contract and `contrib/apt.lua` for a
 worked example.
 
+`setup.push` runs after every push of its module, not only the first, for
+anything derived from the machine rather than the repo, such as a cache of
+`brew --prefix`.
+
 Files a setup hook generates into `path` belong in `ignore`; otherwise the next
 `pull` copies them into the repo and the next `push` on another machine treats
 them as strays.

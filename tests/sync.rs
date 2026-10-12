@@ -443,3 +443,57 @@ fn trash_prune_removes_old_runs_only() {
     assert_eq!(removed, std::slice::from_ref(&old));
     assert!(!old.exists() && new.exists());
 }
+
+#[test]
+fn push_hook_runs_on_every_push_but_not_pull_or_no_setup() {
+    let mut sb = Sandbox::new();
+    write(
+        &sb.repo.join("app/qd.lua"),
+        r#"local qd = require("qd")
+local n = 0
+return {
+  path = qd.path.home(".config/app"),
+  encrypt = { "**/*.secret" },
+  ignore = { "**/pushed.txt" },
+  setup = {
+    push = function(m)
+      n = n + 1
+      qd.write(qd.path.join(m.dest, "pushed.txt"), tostring(n))
+    end,
+  },
+}"#,
+    );
+    let repo = sb.load();
+    let pushed = sb.dest().join("pushed.txt");
+
+    let p = sb.plan(&repo, Direction::Push, PlanOpts::default());
+    assert!(p.push_hook && p.first_run);
+    sb.apply(&repo, &p);
+    assert_eq!(read(&pushed), "1");
+
+    let p = sb.plan(&repo, Direction::Push, PlanOpts::default());
+    assert!(
+        p.is_empty(),
+        "the push hook alone is not a pending change: {p:?}"
+    );
+    assert!(p.push_hook);
+    sb.apply(&repo, &p);
+    assert_eq!(read(&pushed), "2", "runs again with nothing to copy");
+
+    let p = sb.plan(
+        &repo,
+        Direction::Push,
+        PlanOpts {
+            no_setup: true,
+            ..Default::default()
+        },
+    );
+    assert!(!p.push_hook);
+    sb.apply(&repo, &p);
+    assert_eq!(read(&pushed), "2");
+
+    let p = sb.plan(&repo, Direction::Pull, PlanOpts::default());
+    assert!(!p.push_hook);
+    sb.apply(&repo, &p);
+    assert_eq!(read(&pushed), "2");
+}

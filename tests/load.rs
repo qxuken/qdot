@@ -194,7 +194,10 @@ fn effectful_api_is_rejected_during_load() {
         "{:#}",
         Repo::load(Host::new(Os::Darwin, "/h", tmp.path())).unwrap_err()
     );
-    assert!(err.contains("setup.before or setup.after"), "{err}");
+    assert!(
+        err.contains("setup.before, setup.after or setup.push"),
+        "{err}"
+    );
 }
 
 #[test]

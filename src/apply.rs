@@ -1,4 +1,4 @@
-//! Execute a plan: hooks, atomic writes, trash-backed removes, journal,
+//! Execute a plan: hooks (`setup.push` on every push), atomic writes, trash-backed removes, journal,
 //! state update.
 
 use std::path::Path;
@@ -17,6 +17,7 @@ pub struct Report {
     pub applied: usize,
     pub ran_before: bool,
     pub ran_after: bool,
+    pub ran_push: bool,
 }
 
 pub struct Applier<'a> {
@@ -70,6 +71,14 @@ impl<'a> Applier<'a> {
                 .run_after(&view)
                 .with_context(|| format!("module `{}`", module.name))?;
             report.ran_after = true;
+        }
+
+        if plan.push_hook {
+            module
+                .hooks
+                .run_push(&view)
+                .with_context(|| format!("module `{}`", module.name))?;
+            report.ran_push = true;
         }
 
         let entry = self.state.modules.entry(module.name.clone()).or_default();
