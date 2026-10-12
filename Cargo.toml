@@ -1,6 +1,6 @@
 [package]
 name = "qdot"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Dotfiles manager: modules configured in Lua, secrets encrypted with age, history in git"
 license = "MIT"
