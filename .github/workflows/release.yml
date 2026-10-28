@@ -2,6 +2,10 @@
 #
 #   verify ── build [5 targets] ── release ── publish
 #
+# `verify` resolves which tag is being released — the pushed one, the one a
+# dispatch named, or the newest `v*` when a dispatch names none — and every
+# later job checks that tag out, so one run can never mix two versions.
+#
 # Every target builds on a runner of its own kind, so nothing cross-links:
 # musl on each Linux arch, both Apple targets on the arm64 macOS runner (the
 # Xcode SDK carries x86_64 too), MSVC on Windows. Linux is fully static
@@ -25,8 +29,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: An existing vX.Y.Z tag to (re)build the release for.
-        required: true
+        description: An existing vX.Y.Z tag to (re)build. Leave empty for the newest.
+        required: false
 
 permissions:
   contents: read
@@ -42,25 +46,56 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.v.outputs.version }}
-      tag: ${{ steps.v.outputs.tag }}
+      tag: ${{ steps.t.outputs.tag }}
     steps:
+      # The whole history, so a dispatch that names no tag can look the tags up.
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      # One place decides which tag is being released: the one pushed, the one
+      # a dispatch named, or — naming none — the newest `v*` in the repository.
+      - name: Resolve the tag
+        id: t
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "$INPUT_TAG" ]; then
+            tag="$INPUT_TAG"
+          elif [ "${GITHUB_REF_TYPE:-}" = tag ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            # `versionsort.suffix=-` ranks v1.0.0-rc.1 below v1.0.0; without it
+            # git's version sort puts the prerelease above its own release.
+            tag=$(git -c versionsort.suffix=- tag --list 'v*' --sort=-v:refname | head -1)
+            if [ -z "$tag" ]; then
+              echo "no v* tag in the repository" >&2
+              exit 1
+            fi
+            echo "no tag given; the newest is $tag"
+          fi
+          if ! git rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null; then
+            echo "no such tag: $tag" >&2
+            exit 1
+          fi
+          # Everything after this reads the tag's tree, not the branch's.
+          git checkout -q --detach "refs/tags/$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Tag matches Cargo.toml
         id: v
+        env:
+          TAG: ${{ steps.t.outputs.tag }}
         run: |
           set -euo pipefail
-          tag="${{ inputs.tag || github.ref_name }}"
-          want="${tag#v}"
+          want="${TAG#v}"
           have=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           if [ "$want" != "$have" ]; then
             echo "tag $want != Cargo.toml $have" >&2
             exit 1
           fi
           echo "version=$want" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Install toolchain
         run: rustup toolchain install stable --profile minimal
