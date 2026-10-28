@@ -205,6 +205,8 @@ First-run rule (`first_run = true` when any holds):
 
 Location: platform state dir (`~/.local/state/qd` on Linux, Application Support on macOS, `%LOCALAPPDATA%\qd` on Windows), override with `QD_STATE`.
 
+The home every destination hangs off comes from `dirs::home_dir`, which reads `HOME` on Unix but asks the OS on Windows and reads no environment variable at all. `QD_HOME` overrides it on every platform, which is how the integration tests point the binary at a home of their own; without it the Windows runs reached the real profile directory.
+
 ```toml
 [machine]
 tags = ["work"]

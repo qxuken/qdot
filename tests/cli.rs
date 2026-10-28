@@ -79,6 +79,7 @@ return { enabled = not qd.tag("skip"), path = qd.path.home("other"), brew = { "t
             .args(["--repo", self.repo.to_str().unwrap()])
             .args(args)
             .env("HOME", &self.home)
+            .env("QD_HOME", &self.home)
             .env("QD_STATE", &self.state)
             .env_remove("QD_TAGS")
             .env_remove("DOTFILES_TAGS")
@@ -99,6 +100,7 @@ return { enabled = not qd.tag("skip"), path = qd.path.home("other"), brew = { "t
         c.args(["--repo", self.repo.to_str().unwrap()])
             .args(args)
             .env("HOME", &self.home)
+            .env("QD_HOME", &self.home)
             .env("QD_STATE", &self.state)
             .env_remove("QD_TAGS")
             .env_remove("DOTFILES_TAGS")
@@ -252,6 +254,24 @@ fn tags_state_and_completion() {
     assert!(out.contains("[setup v1: --force]"), "{out}");
 }
 
+/// Every test below runs the binary against a home of its own, so the one
+/// thing that must hold before any of them means anything is that the
+/// sandboxed home is the home the binary uses. `HOME` alone does not say so
+/// on Windows, where `dirs::home_dir` asks the OS and reads no environment
+/// variable at all; `QD_HOME` is what carries it there.
+#[test]
+fn the_sandboxed_home_is_the_home_the_binary_uses() {
+    let e = Env::new();
+    let out = e.ok(&["host"]);
+    let h: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(h["home"], json!(e.home.to_str().unwrap()), "{out}");
+    assert_eq!(
+        h["config"],
+        json!(e.home.join(".config").to_str().unwrap()),
+        "the derived directories follow it: {out}"
+    );
+}
+
 #[test]
 fn detected_facts_are_not_tags() {
     let e = Env::new();
@@ -341,13 +361,16 @@ fn compile_orders_like_the_nushell_tool() {
         format!(
             "source `{}`\nsource `{}`\n",
             e.repo.join("config.nu").display(),
-            e.home.join(".config/app/config.nu").display()
+            e.home.join(".config/app").join("config.nu").display()
         )
     );
     assert_eq!(outputs[1].path, e.home.join(".dotfiles-env.local.nu"));
     assert_eq!(
         outputs[1].content,
-        format!("source `{}`\n", e.home.join(".config/app/env.nu").display())
+        format!(
+            "source `{}`\n",
+            e.home.join(".config/app").join("env.nu").display()
+        )
     );
     assert_eq!(compile::changed(&outputs).len(), 2, "nothing written yet");
 }

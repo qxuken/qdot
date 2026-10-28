@@ -60,7 +60,8 @@ them as strays.
 
 `qd state path` shows the directory holding `state.toml` (tags, repo and
 identity paths, per-module setup versions), `journal.jsonl`, and `trash/`.
-Override it with `QD_STATE`. Removed and overwritten files go to the trash;
+Override it with `QD_STATE`, and the home that destinations hang off with
+`QD_HOME`. Removed and overwritten files go to the trash;
 `qd trash prune --older 30d` cleans up.
 
 Tags gate `enabled` in a config. `qd tag add <name>` records one in `state.toml`,

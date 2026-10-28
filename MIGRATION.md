@@ -178,6 +178,16 @@ What moved:
    `drydock9` entry in `publish` are gone. A consumer depending on `qdot`
    drops `registry = "drydock9"`.
 
+CI found four Windows test failures the Forgejo runner had never covered, all
+one root cause: the integration tests sandbox the home with `HOME`, which
+`dirs::home_dir` reads on Unix but not on Windows, where it asks the OS. So the
+Windows runs pushed into the real profile directory. `QD_HOME` now overrides the
+home on every platform, the tests set it, and one test asserts the binary does
+use the sandboxed home — the thing whose absence turned one cause into four
+confusing symptoms. A fifth failure was the test's own expectation: it built a
+path with `join(".config/app/config.nu")`, which keeps both slashes on Windows,
+while qd joins the last component with a `\`.
+
 Still to do, by hand:
 
 - Turn off the Forgejo push mirror, or it force-overwrites GitHub.

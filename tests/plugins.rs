@@ -187,6 +187,7 @@ fn a_list_returning_plugin_prints() {
     let out = Command::new(env!("CARGO_BIN_EXE_qd"))
         .args(["--repo", e.repo.to_str().unwrap(), "packages", "list"])
         .env("HOME", &e.home)
+        .env("QD_HOME", &e.home)
         .env("QD_STATE", &e.state)
         .output()
         .unwrap();

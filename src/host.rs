@@ -87,7 +87,7 @@ impl Host {
         dotfiles: impl Into<PathBuf>,
         tags: impl IntoIterator<Item = String>,
     ) -> Result<Host> {
-        let home = dirs::home_dir().context("cannot determine the home directory")?;
+        let home = home_dir()?;
         let mut host = Host::new(Os::current(), home, dotfiles);
         host.tags = tags.into_iter().collect();
         // DOTFILES_TAGS is the Nushell tool's name for this and is still set in
@@ -109,6 +109,18 @@ impl Host {
     pub fn has_tag(&self, tag: &str) -> bool {
         self.tags.contains(tag)
     }
+}
+
+/// `QD_HOME` overrides; otherwise the platform's own answer. The override is
+/// there because `dirs::home_dir` reads `HOME` on Unix but calls
+/// `SHGetKnownFolderPath` on Windows, which no environment variable reaches —
+/// so a test, or anyone running qd against a home that is not theirs, has no
+/// other way to say which home is meant.
+fn home_dir() -> Result<PathBuf> {
+    if let Some(p) = std::env::var_os("QD_HOME") {
+        return Ok(PathBuf::from(p));
+    }
+    dirs::home_dir().context("cannot determine the home directory; set QD_HOME")
 }
 
 /// Tags as written in an environment variable: separated by commas or whitespace,

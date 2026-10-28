@@ -216,6 +216,7 @@ return { path = qd.path.home("m") }
         let mut c = Command::new(env!("CARGO_BIN_EXE_qd"));
         c.args(["--repo", e.repo.to_str().unwrap(), "show", "m"])
             .env("HOME", &e.home)
+            .env("QD_HOME", &e.home)
             .env("QD_STATE", &e.state)
             .env_remove("QD_DEBUG");
         if debug {
