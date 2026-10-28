@@ -66,26 +66,58 @@ return { enabled = not qd.tag("skip"), path = qd.path.home("other"), brew = { "t
             &repo.join("nopath/qd.lua"),
             r#"return { brew = { "third" } }"#,
         );
-        Env {
+        let e = Env {
             _tmp: tmp,
             repo,
             home,
             state,
-        }
+        };
+        e.assert_sandboxed();
+        e
     }
 
-    fn qd(&self, args: &[&str]) -> (bool, String, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_qd"))
-            .args(["--repo", self.repo.to_str().unwrap()])
+    /// The one place a spawn is built. Tests here run real pushes, and a push
+    /// writes to whatever home the binary resolves — the compiled
+    /// `.dotfiles*.local.nu` and every module's destination. So the home is
+    /// set here: `HOME`, which `dirs::home_dir` reads on Unix, and `QD_HOME`,
+    /// which it reads everywhere.
+    fn command(&self, args: &[&str]) -> Command {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_qd"));
+        c.args(["--repo", self.repo.to_str().unwrap()])
             .args(args)
             .env("HOME", &self.home)
             .env("QD_HOME", &self.home)
             .env("QD_STATE", &self.state)
             .env_remove("QD_TAGS")
             .env_remove("DOTFILES_TAGS")
-            .env_remove("WSL_DISTRO_NAME")
-            .output()
-            .unwrap();
+            .env_remove("WSL_DISTRO_NAME");
+        c
+    }
+
+    /// Run before any test can push: asks the binary which home it resolved
+    /// and refuses to go on unless it is the sandbox. Checking what `command`
+    /// *sets* would not do — the whole failure mode is an environment variable
+    /// that the platform does not read, where the test looks right and the
+    /// push lands in the real home.
+    fn assert_sandboxed(&self) {
+        let out = self.command(&["host"]).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let h: serde_json::Value =
+            serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+        assert_eq!(
+            h["home"],
+            json!(self.home.to_str().unwrap()),
+            "the binary must resolve the sandbox home, not {}",
+            h["home"]
+        );
+    }
+
+    fn qd(&self, args: &[&str]) -> (bool, String, String) {
+        let out = self.command(args).output().unwrap();
         (
             out.status.success(),
             String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -96,15 +128,7 @@ return { enabled = not qd.tag("skip"), path = qd.path.home("other"), brew = { "t
     /// Like `qd`, but with extra environment variables set, so that the tests
     /// which care about detection can supply them deliberately.
     fn qd_env(&self, args: &[&str], env: &[(&str, &str)]) -> (bool, String, String) {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_qd"));
-        c.args(["--repo", self.repo.to_str().unwrap()])
-            .args(args)
-            .env("HOME", &self.home)
-            .env("QD_HOME", &self.home)
-            .env("QD_STATE", &self.state)
-            .env_remove("QD_TAGS")
-            .env_remove("DOTFILES_TAGS")
-            .env_remove("WSL_DISTRO_NAME");
+        let mut c = self.command(args);
         for (k, v) in env {
             c.env(k, v);
         }
