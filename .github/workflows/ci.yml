@@ -65,5 +65,8 @@ jobs:
           git config --global user.email "ci@example.invalid"
           git config --global init.defaultBranch main
 
+      # --no-fail-fast: cargo stops at the first failing test binary, so a
+      # platform-specific break in an early one hides every later suite and
+      # each CI round reveals only the next layer.
       - name: Test
-        run: cargo test --all-features
+        run: cargo test --all-features --no-fail-fast

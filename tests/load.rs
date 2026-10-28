@@ -10,14 +10,26 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-fn host(tags: &[&str]) -> Host {
-    let mut h = Host::new(Os::Darwin, "/h", fixture("repo1"));
-    h.tags = tags.iter().map(|s| s.to_string()).collect();
-    h
+/// A fake absolute path on every platform. A leading `/` alone is not absolute
+/// on Windows — it has no prefix — and qd requires a module's `path` to be
+/// absolute, so `/h` would make every fixture here fail to load there.
+fn abs(unix: &str) -> PathBuf {
+    if cfg!(windows) {
+        PathBuf::from(format!("C:{unix}"))
+    } else {
+        PathBuf::from(unix)
+    }
 }
 
-fn p(s: &str) -> PathBuf {
-    PathBuf::from(s)
+/// The fake home the fixtures resolve against.
+fn home() -> PathBuf {
+    abs("/h")
+}
+
+fn host(tags: &[&str]) -> Host {
+    let mut h = Host::new(Os::Darwin, home(), fixture("repo1"));
+    h.tags = tags.iter().map(|s| s.to_string()).collect();
+    h
 }
 
 #[test]
@@ -46,7 +58,8 @@ fn loads_all_modules_and_root() {
 fn neovim_resolves_paths_packages_and_nushell() {
     let repo = Repo::load(host(&[])).unwrap();
     let m = repo.module("neovim").unwrap();
-    assert_eq!(m.dest.as_deref(), Some(p("/h/.config/nvim").as_path()));
+    let nvim = home().join(".config").join("nvim");
+    assert_eq!(m.dest.as_deref(), Some(nvim.as_path()));
     assert_eq!(m.src, fixture("repo1").join("neovim"));
 
     assert_eq!(
@@ -57,8 +70,8 @@ fn neovim_resolves_paths_packages_and_nushell() {
     assert_eq!(m.ext["brew"], m.ext["scoop"]);
 
     let nu = &m.ext["nushell"];
-    assert_eq!(nu["source"], json!(["/h/.config/nvim/config.nu"]));
-    assert_eq!(nu["env_source"], json!(["/h/.config/nvim/env.nu"]));
+    assert_eq!(nu["source"], json!([nvim.join("config.nu")]));
+    assert_eq!(nu["env_source"], json!([nvim.join("env.nu")]));
     assert_eq!(nu["include"], json!([]));
 
     let setup = m.setup.as_ref().expect("setup present");
@@ -77,19 +90,24 @@ fn root_globs_are_prepended_and_compiled() {
     assert!(m.ignore_set.is_match(".git/HEAD"));
     assert!(m.ignore_set.is_match("sub/.git/HEAD"));
     assert_eq!(m.include, [fixture("repo1").join(".editorconfig")]);
-    assert_eq!(m.ext["nushell"]["include"], json!(["/h/vpn/vpn.nu"]));
+    assert_eq!(
+        m.ext["nushell"]["include"],
+        json!([home().join("vpn").join("vpn.nu")])
+    );
     assert!(m.setup.is_none());
 }
 
 #[test]
 fn windows_host_picks_local_appdata() {
-    let mut h = Host::new(Os::Windows, "/win/home", fixture("repo1"));
-    h.local_appdata = Some(p("/win/home/AppData/Local"));
+    let win_home = abs("/win/home");
+    let local_appdata = win_home.join("AppData").join("Local");
+    let mut h = Host::new(Os::Windows, &win_home, fixture("repo1"));
+    h.local_appdata = Some(local_appdata.clone());
     let repo = Repo::load(h).unwrap();
     let m = repo.module("neovim").unwrap();
     assert_eq!(
         m.dest.as_deref(),
-        Some(p("/win/home/AppData/Local/nvim").as_path())
+        Some(local_appdata.join("nvim").as_path())
     );
 }
 
@@ -118,12 +136,12 @@ fn tags_disable_modules_and_file_pairs() {
         vc.files[0].src,
         fixture("repo1").join("version-control/always")
     );
-    assert_eq!(vc.files[0].dest, p("/h/.always"));
+    assert_eq!(vc.files[0].dest, home().join(".always"));
 
     let repo = Repo::load(host(&[])).unwrap();
     let vc = repo.module("version-control").unwrap();
     assert_eq!(vc.files.len(), 2);
-    assert_eq!(vc.files[0].dest, p("/h/.gitconfig"));
+    assert_eq!(vc.files[0].dest, home().join(".gitconfig"));
 }
 
 #[test]
@@ -146,12 +164,17 @@ fn detailed_packages_and_setup_version() {
 fn unknown_field_is_an_error() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::create_dir(tmp.path().join("broken")).unwrap();
+    // Absolute on Windows too, or the `path` error fires before the typo one
+    // this test is about. Forward slashes: it goes into a Lua string.
     std::fs::write(
         tmp.path().join("broken/qd.lua"),
-        "return { path = '/tmp/x', typo_field = true }",
+        format!(
+            "return {{ path = '{}', typo_field = true }}",
+            abs("/tmp/x").display()
+        ),
     )
     .unwrap();
-    let err = Repo::load(Host::new(Os::Darwin, "/h", tmp.path())).unwrap_err();
+    let err = Repo::load(Host::new(Os::Darwin, home(), tmp.path())).unwrap_err();
     let msg = format!("{err:#}");
     assert!(
         msg.contains("module `broken`") && msg.contains("unknown field `typo_field`"),
@@ -170,7 +193,7 @@ fn relative_path_without_module_path_is_an_error() {
     .unwrap();
     let err = format!(
         "{:#}",
-        Repo::load(Host::new(Os::Darwin, "/h", tmp.path())).unwrap_err()
+        Repo::load(Host::new(Os::Darwin, home(), tmp.path())).unwrap_err()
     );
     assert!(
         err.contains("module `m`")
@@ -192,7 +215,7 @@ fn effectful_api_is_rejected_during_load() {
     .unwrap();
     let err = format!(
         "{:#}",
-        Repo::load(Host::new(Os::Darwin, "/h", tmp.path())).unwrap_err()
+        Repo::load(Host::new(Os::Darwin, home(), tmp.path())).unwrap_err()
     );
     assert!(
         err.contains("setup.before, setup.after or setup.push"),
@@ -211,7 +234,7 @@ fn sandbox_has_no_os_io_or_loaders() {
          assert(type(print) == 'function' and type(qd.warn) == 'function')\nreturn {}",
     )
     .unwrap();
-    Repo::load(Host::new(Os::Darwin, "/h", tmp.path())).unwrap();
+    Repo::load(Host::new(Os::Darwin, home(), tmp.path())).unwrap();
 }
 
 #[test]
@@ -221,7 +244,7 @@ fn runaway_config_hits_the_budget() {
     std::fs::write(tmp.path().join("m/qd.lua"), "while true do end\nreturn {}").unwrap();
     let err = format!(
         "{:#}",
-        Repo::load(Host::new(Os::Darwin, "/h", tmp.path())).unwrap_err()
+        Repo::load(Host::new(Os::Darwin, home(), tmp.path())).unwrap_err()
     );
     assert!(err.contains("instruction budget"), "{err}");
 }
@@ -237,7 +260,7 @@ fn require_cannot_escape_the_repo() {
     .unwrap();
     let err = format!(
         "{:#}",
-        Repo::load(Host::new(Os::Darwin, "/h", tmp.path())).unwrap_err()
+        Repo::load(Host::new(Os::Darwin, home(), tmp.path())).unwrap_err()
     );
     assert!(err.contains("invalid module name"), "{err}");
 }
@@ -273,7 +296,7 @@ fn hooks_run_with_module_argument() {
 fn empty_repo_is_an_error() {
     let err = format!(
         "{:#}",
-        Repo::load(Host::new(Os::Darwin, "/h", fixture("empty"))).unwrap_err()
+        Repo::load(Host::new(Os::Darwin, home(), fixture("empty"))).unwrap_err()
     );
     assert!(err.contains("no qd.lua"), "{err}");
 }
