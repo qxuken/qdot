@@ -13,7 +13,10 @@
 # `qd self-update` and contrib/install.nu read them from
 # .../releases/latest/download/ with plain GETs, so neither is tied to GitHub's
 # API and a future move only has to keep serving them.
-# `publish` then pushes the crate to crates.io (secret CRATES_IO_TOKEN).
+# `publish` then pushes the crate to crates.io through trusted publishing: the
+# job trades a GitHub OIDC token for a short-lived crates.io one, so there is no
+# secret in the repository to store, leak or rotate. Configured on crates.io
+# against this repository and this workflow's filename.
 name: release
 
 on:
@@ -213,6 +216,12 @@ jobs:
   publish:
     needs: [verify, release]
     runs-on: ubuntu-24.04
+    permissions:
+      # A job-level block replaces the workflow's, so `contents` is repeated
+      # here for the checkout. `id-token` is what lets the job ask GitHub for
+      # the OIDC token that trusted publishing trades for a crates.io one.
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -221,18 +230,37 @@ jobs:
       - name: Install toolchain
         run: rustup toolchain install stable --profile minimal
 
-      # A version on crates.io stays forever — yanked, never deleted — so
-      # this runs last, once the binaries are up. Already there (a dispatch
-      # for an old tag, or a re-run after the upload failed) is not an error.
-      - name: cargo publish
+      # A version on crates.io stays forever — yanked, never deleted — so this
+      # job runs last, once the binaries are up, and a version already there
+      # (a dispatch for an old tag, or a re-run after the upload failed) is not
+      # an error. Checked before authenticating, so a no-op run mints no token.
+      - name: Already published?
+        id: check
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
           VERSION: ${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail
-          if curl -fsS -A "qdot-release-workflow" \
-               "https://crates.io/api/v1/crates/qdot/$VERSION" >/dev/null; then
-            echo "qdot $VERSION is already on crates.io"
-            exit 0
-          fi
-          cargo publish --locked --registry crates-io
+          # On the status code, not on curl's exit: a 429 or a 5xx must not
+          # read as "not published yet" and send us on to publish.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -A "qdot-release-workflow" \
+                   "https://crates.io/api/v1/crates/qdot/$VERSION")
+          case "$code" in
+            200) echo "qdot $VERSION is already on crates.io"
+                 echo "skip=true" >> "$GITHUB_OUTPUT" ;;
+            404) echo "qdot $VERSION is not on crates.io yet"
+                 echo "skip=false" >> "$GITHUB_OUTPUT" ;;
+            *)   echo "crates.io answered $code for qdot $VERSION" >&2
+                 exit 1 ;;
+          esac
+
+      - name: Authenticate with crates.io
+        id: auth
+        if: steps.check.outputs.skip == 'false'
+        uses: rust-lang/crates-io-auth-action@v1
+
+      # The action's post step revokes the token when the job ends.
+      - name: cargo publish
+        if: steps.check.outputs.skip == 'false'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish --locked --registry crates-io

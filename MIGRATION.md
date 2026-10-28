@@ -221,8 +221,11 @@ below is still owed; what changes is that it should be the last one.
 Still to do, by hand:
 
 - Turn off the Forgejo push mirror, or it force-overwrites GitHub.
-- Set `CRATES_IO_TOKEN` as a repository secret on GitHub (`PACKAGES_TOKEN`
-  is no longer read).
+- Configure trusted publishing for `qdot` on crates.io, against repository
+  `qxuken/qdot` and workflow `release.yml`: the publish job holds no secret
+  and mints a short-lived token per run. Nothing to set on GitHub's side
+  beyond the `id-token: write` permission the workflow already asks for.
+  `PACKAGES_TOKEN` and `CRATES_IO_TOKEN` are both unused now.
 - The repository's homepage still points at drydock9.
 - Binaries at 0.3.0 and earlier self-update from Forgejo and cannot follow
   either move. One manual install per machine — macOS, WSL, Windows — after
