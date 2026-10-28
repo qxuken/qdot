@@ -199,16 +199,38 @@ The rest were the tests' own expectations: a path built with
 `join(".config/app/config.nu")` keeps both slashes on Windows, while qd joins
 the last component onto the module path with a `\`.
 
+## Phase 6 — so the next move costs nothing
+
+Status 2026-10-28: done, unreleased. Phase 5 cost three reinstalls, and the
+reason was the shape of the update path, not the host. 0.3.0 had `--host`, but
+it would have called `/api/v1/packages/{owner}?type=generic` on github.com,
+which does not exist there, so no flag could redirect an installed binary.
+
+`qd self-update` now knows one base URL serving three static files —
+`version.txt`, `checksums.sha256` and `qd-<os>-<arch>` — and nothing about
+whoever serves them. GitHub does, at `.../releases/latest/download/`; so can
+S3, R2, a Worker, nginx or a Forgejo generic registry. The next move therefore
+has a path phase 5 did not: publish the three files at the new home, keep the
+old base answering for one release (a redirect is enough), and every machine
+rolls itself forward. `--url` with `--sha256` installs one named binary with no
+discovery, for when the base URL itself is gone.
+
+This does nothing for binaries already installed, 0.3.0 included. The reinstall
+below is still owed; what changes is that it should be the last one.
+
 Still to do, by hand:
 
 - Turn off the Forgejo push mirror, or it force-overwrites GitHub.
 - Set `CRATES_IO_TOKEN` as a repository secret on GitHub (`PACKAGES_TOKEN`
   is no longer read).
 - The repository's homepage still points at drydock9.
-- Binaries at 0.3.0 and earlier self-update from Forgejo. Either keep that
-  registry serving 0.3.0 until every machine has installed a GitHub build
-  once, or install the next release by hand on each. There are three
-  machines: macOS, WSL, Windows.
+- Binaries at 0.3.0 and earlier self-update from Forgejo and cannot follow
+  either move. One manual install per machine — macOS, WSL, Windows — after
+  which `self-update` works again and, per phase 6, should keep working
+  across the next move. Or, to avoid touching each machine, upload the next
+  release's assets to the Forgejo generic registry as well, once: 0.3.0 will
+  self-update to it from there, and that binary reads the static layout
+  afterwards. The registry was still serving 0.1.0–0.3.0 as of 2026-10-28.
 - A GitHub release for v0.3.0 has no assets. `release.yml`'s manual
   dispatch takes an existing tag, so it can backfill one; crates.io
   already has 0.3.0 and that step skips itself.

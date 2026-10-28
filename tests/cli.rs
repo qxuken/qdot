@@ -407,17 +407,28 @@ fn compile_orders_like_the_nushell_tool() {
 }
 
 #[test]
-fn self_update_reports_asset_name_and_handles_unreachable_api() {
+fn self_update_reports_asset_name_and_handles_an_unreachable_base() {
     let name = qd::update::asset_name();
     assert!(name.starts_with("qd-"), "{name}");
     let src = qd::update::Source {
-        api: "http://127.0.0.1:9".into(),
-        owner: "x".into(),
-        repo: "qdot".into(),
+        base: "http://127.0.0.1:9/d".into(),
         token: None,
     };
     let err = qd::update::self_update(&src, true).unwrap_err();
-    assert!(format!("{err:#}").contains("fetching"), "{err:#}");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("fetching"), "{msg}");
+    assert!(msg.contains("version.txt"), "names what it wanted: {msg}");
+}
+
+/// The escape hatch refuses before it fetches anything: a binary is never
+/// installed from a url without a digest to check it against.
+#[test]
+fn update_from_url_demands_a_real_digest() {
+    for bad in ["", "deadbeef", &"z".repeat(64)] {
+        let err = qd::update::update_from_url("http://127.0.0.1:9/qd", bad).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("SHA-256"), "{bad:?}: {msg}");
+    }
 }
 
 /// `qd add` writes NAME/qd.lua naming the directory by its place under

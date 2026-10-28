@@ -11,7 +11,7 @@ Replacement for `dotfiles.nu`: a single static binary, Rust, Lua-configured, git
 | Lua engine | `mlua` with `lua55` + `vendored` + `serialize` features | no system Lua, cross-compiles with `cc` |
 | Encryption | `age` crate, X25519, `master.rec` committed / `master.key` ignored | unchanged from today; SSH-key identities via `age::ssh` are an optional later step |
 | VCS | git on GitHub, behind a `Vcs` trait; first impl shells out to system git, `git2` backend later | avoids vendored libgit2/libssh2/openssl cross-build pain up front |
-| Hosting/CI | GitHub Actions, one runner per target kind, assets attached to the GitHub release | `qd self-update` reads the releases API |
+| Hosting/CI | GitHub Actions, one runner per target kind, assets attached to the GitHub release | `qd self-update` reads three static files, not an API, so a future move needs no new binary |
 | Machine state | `state.toml` in the platform state dir, plus `journal.jsonl` and a trash dir | replaces dest-exists first-run detection; tags live here rather than only in `QD_TAGS`/`DOTFILES_TAGS` |
 | Sync semantics | content-hash compare, plan/apply split, atomic writes, removes go to trash | fixes mtime clobbering from fresh clones; makes `status`/`--dry-run` free |
 | Plugins | Lua tables declared by the root `qd.lua`; the Nushell compiler and brew/scoop ship as built-ins | keeps the core a pure sync pipeline; anything shell- or package-manager-specific is data folded by a plugin |
@@ -240,7 +240,7 @@ last_push = 2026-09-04T10:12:00Z
 | `qd tag list\|add\|rm` | machine tags in state |
 | `qd state show\|path\|adopt\|set-repo\|set-identity` | state file |
 | `qd undo [run]`, `qd journal [--last]`, `qd trash prune [--older 30d]\|path` | journal/trash |
-| `qd self-update [--api] [--owner] [--repository] [--token] [--dry-run]` | GitHub releases API, SHA-256 verified |
+| `qd self-update [--base-url] [--token] [--dry-run]`, or `--url` + `--sha256` | three static GETs, SHA-256 verified |
 | `qd __complete modules\|all-modules` | for `contrib/qd.nu` |
 
 Git wraps the pipeline: `push -s` fetches and fast-forwards before discovery; `pull -s` commits and pushes after apply.
@@ -263,7 +263,21 @@ Two workflows on GitHub's own runners. `.github/workflows/ci.yml` runs fmt and c
 
 `.github/workflows/release.yml` runs on a `v*` tag, or on a manual dispatch naming an existing tag. `verify` checks the tag against `Cargo.toml` and that `Cargo.lock` is current, and is the single place the version is derived. `build` then builds the five targets, each on a runner of its own kind — so nothing cross-links and no Apple SDK is downloaded: musl on `ubuntu-24.04` and `ubuntu-24.04-arm` (fully static), both Apple targets on `macos-15` (the Xcode SDK carries x86_64 too), and `x86_64-pc-windows-msvc` on `windows-2025`. Every binary but the x86_64 macOS one, which the arm64 runner cannot execute, is run with `--version` and checked against the tag. `release` writes `checksums.sha256` over the five, copies `contrib/install.nu` in beside them, and attaches the lot to the GitHub release, replacing the assets if the release already exists. `publish` pushes the crate to crates.io with the `CRATES_IO_TOKEN` secret, skipping it when that version is already there.
 
-`qd self-update` lists `/repos/{owner}/{repo}/releases`, takes the highest non-draft version, reads `checksums.sha256` off that release, downloads `qd-<os>-<arch>[.exe]`, verifies the SHA-256 and swaps the binary. Defaults: api `https://api.github.com`, owner `qxuken`, repo `qdot`; override with `--api/--owner/--repository` (not `--repo`, which is the dotfiles repository) or `QD_UPDATE_API/QD_UPDATE_OWNER/QD_UPDATE_REPO`, and `--token`/`QD_UPDATE_TOKEN` for a private repository's releases list. Binaries from 0.3.0 and earlier read the Forgejo generic package registry instead and cannot self-update across the move.
+## Updating
+
+`qd self-update` knows one thing: a base URL serving three files.
+
+    {base}/version.txt        the published version, one line
+    {base}/checksums.sha256   a SHA-256 per asset
+    {base}/qd-<os>-<arch>     the binary for this platform
+
+It reads the version, stops if it is not newer, then downloads the asset, checks it against the checksums file and swaps the executable. Default base `https://github.com/qxuken/qdot/releases/latest/download`, which GitHub serves natively; override with `--base-url` or `QD_UPDATE_BASE_URL`, baked in at build time through the same variable. `--token`/`QD_UPDATE_TOKEN` is for a base behind auth; ureq defaults to `RedirectAuthHeaders::Never`, so it is dropped on a redirect and never reaches a CDN that would reject a signed URL carrying one.
+
+This replaced a GitHub releases-API client, which had replaced a Forgejo package-registry client, and the shape of the thing is the reason. The Forgejo → GitHub move stranded every installed binary: 0.3.0 had a `--host` flag, but the endpoint it would call does not exist on GitHub, so no flag could redirect it and all three machines were reinstalled by hand. Three static files can be served by GitHub, S3, R2, a Worker, nginx or a Forgejo generic registry alike, so the next move only has to keep the old base answering for one release — point it at the new home and the fleet rolls itself forward.
+
+What no layout fixes is a base URL that stops answering. For that, `--url` with `--sha256` installs one named binary with no discovery at all, against a host this build has never heard of.
+
+Binaries from 0.3.0 and earlier read the Forgejo generic package registry and cannot self-update across either move.
 
 ## Milestones
 

@@ -60,8 +60,8 @@ them as strays.
 
 `qd state path` shows the directory holding `state.toml` (tags, repo and
 identity paths, per-module setup versions), `journal.jsonl`, and `trash/`.
-Override it with `QD_STATE`, and the home that destinations hang off with
-`QD_HOME`. Removed and overwritten files go to the trash;
+Override it with `QD_STATE`, the home that destinations hang off with
+`QD_HOME`, and where `self-update` looks with `QD_UPDATE_BASE_URL`. Removed and overwritten files go to the trash;
 `qd trash prune --older 30d` cleans up.
 
 Tags gate `enabled` in a config. `qd tag add <name>` records one in `state.toml`,
@@ -108,9 +108,29 @@ and Windows for every push and pull request.
 
 Releases are cut by pushing a `vX.Y.Z` tag matching `Cargo.toml`;
 `.github/workflows/release.yml` builds each target on a runner of its own
-kind, attaches the five binaries plus `checksums.sha256` and `install.nu`
-to the GitHub release — where `qd self-update` finds them — and publishes
-the crate to crates.io.
+kind, attaches the five binaries plus `checksums.sha256`, `version.txt` and
+`install.nu` to the GitHub release, and publishes the crate to crates.io.
+
+## Updating
+
+    qd self-update [--dry-run]
+
+It reads three files from a base URL — `version.txt`, `checksums.sha256`
+and the binary for this platform — verifies the SHA-256 and swaps the
+executable. No forge API is involved, so a mirror, or a new home after a
+move, needs only to serve those three files:
+
+    qd self-update --base-url https://somewhere/else
+
+Override the default permanently with `QD_UPDATE_BASE_URL`, or bake it into
+a build with the same variable. If even the base URL has gone, install one
+named binary directly:
+
+    qd self-update --url https://host/qd-macos-aarch64 --sha256 <hash>
+
+which is never installed unverified. Binaries at 0.3.0 and earlier read the
+old Forgejo package registry and cannot update across the move to GitHub —
+those need one manual install, after which `self-update` works again.
 
 ## Installing
 
@@ -119,8 +139,11 @@ SHA-256 against the published checksums, and installs it into `~/.local/bin`
 (or `%LOCALAPPDATA%\qd\bin`):
 
     nu contrib/install.nu
-    nu contrib/install.nu --version 0.1.0 --dest ~/bin
+    nu contrib/install.nu --version 0.3.0 --dest ~/bin
+    nu contrib/install.nu --base-url https://somewhere/else
     nu contrib/install.nu --init-url ssh://git@drydock9-port1.qxuken.dev/qxuken/dotfiles.git
+
+It reads the same three files `qd self-update` does.
 
 It is published beside the binaries, so a machine with nushell but no clone
 can fetch it first:
@@ -132,6 +155,4 @@ Without nushell, download the asset for the platform directly
 
     curl -fLO https://github.com/qxuken/qdot/releases/latest/download/qd-macos-aarch64
 
-and `chmod +x` it. Releases before 0.4.0 live in the Forgejo package
-registry instead, and `qd self-update` from one of those binaries still
-reads that registry; install 0.4.0 or later once to move over.
+and `chmod +x` it.

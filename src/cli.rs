@@ -134,20 +134,21 @@ enum Cmd {
         #[command(subcommand)]
         cmd: TrashCmd,
     },
-    /// Download and install the latest release from GitHub.
+    /// Download and install the published version.
     SelfUpdate {
-        /// API base, for a GitHub Enterprise instance.
-        #[arg(long, env = "QD_UPDATE_API", default_value = update::DEFAULT_API)]
-        api: String,
-        #[arg(long, env = "QD_UPDATE_OWNER", default_value = update::DEFAULT_OWNER)]
-        owner: String,
-        /// Not `--repo`, which is the dotfiles repository.
-        #[arg(long, env = "QD_UPDATE_REPO", default_value = update::DEFAULT_REPO)]
-        repository: String,
-        /// Token for a private repository; it lists releases, it cannot
-        /// download their assets.
+        /// Base URL serving version.txt, checksums.sha256 and the binaries.
+        #[arg(long, env = "QD_UPDATE_BASE_URL", default_value = update::DEFAULT_BASE)]
+        base_url: String,
+        /// Token for a base URL behind auth.
         #[arg(long, env = "QD_UPDATE_TOKEN", hide_env_values = true)]
         token: Option<String>,
+        /// Install this exact binary and skip discovery, for when the base URL
+        /// itself has moved. `--base-url` is ignored.
+        #[arg(long, requires = "sha256")]
+        url: Option<String>,
+        /// Expected SHA-256 of `--url`, which is never installed unverified.
+        #[arg(long)]
+        sha256: Option<String>,
         #[arg(long)]
         dry_run: bool,
     },
@@ -585,24 +586,32 @@ pub fn run() -> Result<()> {
             }
         },
         Cmd::SelfUpdate {
-            api,
-            owner,
-            repository,
+            base_url,
             token,
+            url,
+            sha256,
             dry_run,
         } => {
-            let src = update::Source {
-                api,
-                owner,
-                repo: repository,
-                token,
+            // `requires` on --url guarantees the digest when there is a url.
+            let outcome = match (url, sha256) {
+                (Some(url), Some(sha256)) => update::update_from_url(&url, &sha256)?,
+                _ => update::self_update(
+                    &update::Source {
+                        base: base_url,
+                        token,
+                    },
+                    dry_run,
+                )?,
             };
-            match update::self_update(&src, dry_run)? {
+            match outcome {
                 update::Outcome::UpToDate(v) => println!("qd {v} is up to date"),
                 update::Outcome::Available { from, to } => {
                     println!("qd {to} is available (running {from})")
                 }
                 update::Outcome::Updated { from, to } => println!("updated qd {from} → {to}"),
+                update::Outcome::Replaced { from, url } => {
+                    println!("replaced qd {from} with {url}")
+                }
             }
         }
         Cmd::Complete { what } => match what.as_str() {

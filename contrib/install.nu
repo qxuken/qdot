@@ -2,26 +2,31 @@
 
 # Portable installer for qd.
 #
-# Downloads a released binary from the GitHub release assets, verifies its
-# SHA-256 against the published checksums file, and installs it into a
-# user-writable directory. No admin rights, no compiler, no clone.
+# Reads three files from a base URL — version.txt, checksums.sha256 and the
+# binary for this platform — verifies the SHA-256, and installs into a
+# user-writable directory. No admin rights, no compiler, no clone, and no
+# forge API: any static host can serve that layout, which is what makes a
+# future move survivable (see src/update.rs).
 #
 #   nu install.nu                                  # latest, into the default dir
-#   nu install.nu --version 0.3.0                  # a specific version
 #   nu install.nu --dest ~/bin                     # somewhere else
+#   nu install.nu --version 0.3.0                  # a specific version
+#   nu install.nu --base-url https://host/path     # a mirror, or a moved home
 #   nu install.nu --init-url ssh://git@host/o/r.git  # …then set the machine up
 #
 # On a machine without nushell yet, fetch this script with the shell you have:
 #
 #   curl -fLO https://github.com/qxuken/qdot/releases/latest/download/install.nu
 #
-# For a private repository pass --token, or better, set QD_UPDATE_TOKEN so the
-# token stays out of shell history and the process list. The token reaches the
-# API only: asset URLs redirect to a signed CDN URL that rejects it.
+# For a base URL behind auth pass --token, or better, set QD_UPDATE_TOKEN so
+# the token stays out of shell history and the process list.
 
-const DEFAULT_API = "https://api.github.com"
-const DEFAULT_OWNER = "qxuken"
-const DEFAULT_REPO = "qdot"
+# Where the current release's files are served.
+const DEFAULT_BASE = "https://github.com/qxuken/qdot/releases/latest/download"
+# Where one named version's files are served; `{version}` is substituted.
+# Separate because GitHub spells "latest" in a different path position, so one
+# template cannot cover both.
+const DEFAULT_VERSION_BASE = "https://github.com/qxuken/qdot/releases/download/v{version}"
 
 # Asset published for this platform. The names match Rust's OS/ARCH constants,
 # which is exactly what `$nu.os-info` reports.
@@ -47,67 +52,47 @@ def default-dest []: nothing -> path {
 }
 
 def auth-headers [token: string]: nothing -> record {
-  let base = {
-    Accept: "application/vnd.github+json"
-    "X-GitHub-Api-Version": "2022-11-28"
-  }
-  if ($token | is-empty) { $base } else { $base | merge {Authorization: $"Bearer ($token)"} }
+  if ($token | is-empty) { {} } else { {Authorization: $"Bearer ($token)"} }
 }
 
-# Sortable pieces of a version; a prerelease ranks below its release.
-def version-parts [v: string]: nothing -> record {
-  let t = ($v | str replace --regex '^v' '')
-  let split = ($t | split row '-')
-  let nums = ($split | first | split row '.' | each {|x| try { $x | into int } catch { 0 }})
-  {
-    version: $v
-    major: ($nums | get -o 0 | default 0)
-    minor: ($nums | get -o 1 | default 0)
-    patch: ($nums | get -o 2 | default 0)
-    rel: (if ($split | length) > 1 { 0 } else { 1 })
-  }
-}
-
-# Drafts are invisible without a token and ranked out with one; a prerelease
-# ranks below the release of the same version, so it only wins when it is the
-# newest thing published.
-def latest-version [api: string, owner: string, repo: string, token: string]: nothing -> string {
-  let url = $"($api)/repos/($owner)/($repo)/releases?per_page=100"
-  let releases = try {
-    http get --headers (auth-headers $token) $url
+# The version the base URL publishes, from its one-line version.txt.
+def published-version [base: string, token: string]: nothing -> string {
+  let url = $"($base)/version.txt"
+  let body = try {
+    http get --headers (auth-headers $token) --raw $url | decode utf-8
   } catch {|e|
-    error make {msg: $"cannot reach the releases API at ($url): ($e.msg)"}
+    error make {msg: $"cannot read ($url): ($e.msg)"}
   }
-  let tags = ($releases | where not ($it.draft? | default false) | get tag_name)
-  if ($tags | is-empty) {
-    error make {msg: $"no published releases at ($url)"}
+  let v = (
+    $body | lines | each {|l| $l | str trim} | where {|l| $l != ""}
+    | get -o 0 | default "" | str replace --regex '^v' ''
+  )
+  # A host that answers every path with a page, rather than 404, would
+  # otherwise have us install "<!doctype".
+  if ($v | is-empty) or not ($v =~ '^[0-9]') {
+    error make {msg: $"($url) does not contain a version", help: $"got: ($v)"}
   }
-  let newest = ($tags | each {|v| version-parts $v} | sort-by major minor patch rel | last)
-  $newest.version | str replace --regex '^v' ''
+  $v
 }
 
-# No token: an asset URL redirects to a signed CDN URL, which rejects a
-# request that also carries an Authorization header.
-def fetch [url: string]: nothing -> binary {
+def fetch [url: string, token: string]: nothing -> binary {
   try {
-    http get --raw $url
+    http get --headers (auth-headers $token) --raw $url
   } catch {|e|
     error make {msg: $"cannot download ($url): ($e.msg)"}
   }
 }
 
 export def main [
-  --version: string             # version to install (default: the newest released)
+  --version: string             # version to install (default: whatever --base-url publishes)
   --dest: path                  # install directory (default: ~/.local/bin, or %LOCALAPPDATA%\qd\bin)
-  --api: string = $DEFAULT_API  # GitHub API base
-  --owner: string = $DEFAULT_OWNER # repository owner
-  --repo: string = $DEFAULT_REPO # repository name
-  --token: string               # token for a private repository (or set QD_UPDATE_TOKEN)
+  --base-url: string = $DEFAULT_BASE # serves version.txt, checksums.sha256, the binaries
+  --version-base-url: string = $DEFAULT_VERSION_BASE # same, for one named --version
+  --token: string               # token for a base URL behind auth (or set QD_UPDATE_TOKEN)
   --init-url: string            # run `qd init --url <this>` after installing
   --keep                        # do not overwrite an existing binary
 ] {
   let token = ($token | default ($env.QD_UPDATE_TOKEN? | default ""))
-  let api = ($api | str trim --right --char '/')
   let asset = (asset-name)
   let dest = ($dest | default (default-dest) | path expand)
   let exe = if $nu.os-info.name == "windows" { "qd.exe" } else { "qd" }
@@ -118,18 +103,29 @@ export def main [
     return
   }
 
-  let version = ($version | default (latest-version $api $owner $repo $token)
-    | str replace --regex '^v' '')
-  # The download endpoint takes the tag, which carries the `v`.
-  let base = $"https://github.com/($owner)/($repo)/releases/download/v($version)"
-  print $"installing qd ($version) \(($asset)) into ($dest)"
+  # A named --version comes from its own directory; otherwise the base URL
+  # publishes which version it is serving.
+  let base = if ($version | is-empty) {
+    $base_url | str trim --right --char '/'
+  } else {
+    $version_base_url | str replace --all "{version}" ($version | str replace --regex '^v' '')
+      | str trim --right --char '/'
+  }
+  # Not `default`, which nushell evaluates eagerly: a named version is already
+  # known, and its own directory need not serve a version.txt at all.
+  let version = if ($version | is-empty) {
+    published-version $base $token
+  } else {
+    $version | str replace --regex '^v' ''
+  }
+  print $"installing qd ($version) \(($asset)) from ($base) into ($dest)"
 
   # The checksums file is served as octet-stream, so decode it before parsing.
-  # A 404 here almost always means the version itself has no release.
+  # A 404 here almost always means that version is not published there.
   let sums = try {
-    http get --raw $"($base)/checksums.sha256"
+    http get --headers (auth-headers $token) --raw $"($base)/checksums.sha256"
   } catch {|e|
-    error make {msg: $"qd ($version) has no release at ($base)", help: $"($e.msg)"}
+    error make {msg: $"qd ($version) is not published at ($base)", help: $"($e.msg)"}
   }
   let expected = (
     $sums
@@ -146,7 +142,7 @@ export def main [
   # Stage next to the target so the final move is a rename on the same volume.
   mkdir $dest
   let staged = ($dest | path join $".qd-install-($version).tmp")
-  fetch $"($base)/($asset)" | save --raw --force $staged
+  fetch $"($base)/($asset)" $token | save --raw --force $staged
 
   let actual = (open --raw $staged | hash sha256)
   if $actual != $expected {
