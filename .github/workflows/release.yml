@@ -8,8 +8,11 @@
 # through the musl target; the macOS and Windows binaries link the system
 # libraries only.
 #
-# `release` attaches the binaries, checksums.sha256 and install.nu to the
-# GitHub release, which is what `qd self-update` and contrib/install.nu read.
+# `release` attaches the binaries, checksums.sha256, version.txt and install.nu
+# to the GitHub release. Those three files are the whole update protocol: both
+# `qd self-update` and contrib/install.nu read them from
+# .../releases/latest/download/ with plain GETs, so neither is tied to GitHub's
+# API and a future move only has to keep serving them.
 # `publish` then pushes the crate to crates.io (secret CRATES_IO_TOKEN).
 name: release
 
@@ -161,6 +164,8 @@ jobs:
 
       - name: Checksums
         working-directory: dist
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail
           for a in qd-linux-x86_64 qd-linux-aarch64 qd-windows-x86_64.exe \
@@ -173,6 +178,10 @@ jobs:
           # installer without a clone. After the checksums on purpose: it is
           # the thing that verifies the others.
           cp ../contrib/install.nu .
+          # What `qd self-update` reads first, so discovery is three plain
+          # GETs against this directory and needs no API. Also after the
+          # checksums: a release's own name is not a thing it attests to.
+          printf '%s\n' "$VERSION" > version.txt
 
       - name: Create the release
         env:
