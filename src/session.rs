@@ -220,12 +220,16 @@ impl Session {
         if file.exists() {
             bail!("{} exists already", file.display());
         }
-        // The home as written and as it resolves: `dest` may have come
-        // through `canonicalize` (`/var` → `/private/var` on macOS).
-        let home = dirs::home_dir();
-        let homes: Vec<PathBuf> = home
-            .iter()
-            .flat_map(|h| [Some(h.clone()), crate::path::canonicalize(h).ok()])
+        // The host's home, not `dirs::home_dir()`: that one reads neither
+        // `QD_HOME` nor the home this session resolved, and stripping the
+        // wrong prefix writes a path no other machine can read.
+        //
+        // As written and as it resolves: `dest` may have come through
+        // `canonicalize` (`/var` → `/private/var` on macOS, and a Windows
+        // 8.3 short name to its long form).
+        let home = self.host()?.home;
+        let homes: Vec<PathBuf> = [Some(home.clone()), crate::path::canonicalize(&home).ok()]
+            .into_iter()
             .flatten()
             .collect();
         let text = module_file(dest, &homes, ignore);

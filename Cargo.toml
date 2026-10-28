@@ -8,10 +8,9 @@ repository = "https://github.com/qxuken/qdot"
 readme = "README.md"
 keywords = ["dotfiles", "lua", "age"]
 categories = ["command-line-utilities", "config"]
-# drydock9 and crates.io, both by CI on a tag; on crates.io `qd` is
-# another crate's name, hence `qdot` — the library and the binary are
-# `qd` either way.
-publish = ["drydock9", "crates-io"]
+# crates.io, by CI on a tag; `qd` is another crate's name there, hence
+# `qdot` — the library and the binary are `qd` either way.
+publish = ["crates-io"]
 # What a published crate carries: the code, its built-in plugins and the
 # docs. Never `migration/`, which holds the author's own module files.
 include = ["/src/**", "/contrib/**", "/Cargo.toml", "/Cargo.lock", "/README.md", "/DESIGN.md", "/LICENSE"]

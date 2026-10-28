@@ -66,25 +66,58 @@ return { enabled = not qd.tag("skip"), path = qd.path.home("other"), brew = { "t
             &repo.join("nopath/qd.lua"),
             r#"return { brew = { "third" } }"#,
         );
-        Env {
+        let e = Env {
             _tmp: tmp,
             repo,
             home,
             state,
-        }
+        };
+        e.assert_sandboxed();
+        e
     }
 
-    fn qd(&self, args: &[&str]) -> (bool, String, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_qd"))
-            .args(["--repo", self.repo.to_str().unwrap()])
+    /// The one place a spawn is built. Tests here run real pushes, and a push
+    /// writes to whatever home the binary resolves — the compiled
+    /// `.dotfiles*.local.nu` and every module's destination. So the home is
+    /// set here: `HOME`, which `dirs::home_dir` reads on Unix, and `QD_HOME`,
+    /// which it reads everywhere.
+    fn command(&self, args: &[&str]) -> Command {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_qd"));
+        c.args(["--repo", self.repo.to_str().unwrap()])
             .args(args)
             .env("HOME", &self.home)
+            .env("QD_HOME", &self.home)
             .env("QD_STATE", &self.state)
             .env_remove("QD_TAGS")
             .env_remove("DOTFILES_TAGS")
-            .env_remove("WSL_DISTRO_NAME")
-            .output()
-            .unwrap();
+            .env_remove("WSL_DISTRO_NAME");
+        c
+    }
+
+    /// Run before any test can push: asks the binary which home it resolved
+    /// and refuses to go on unless it is the sandbox. Checking what `command`
+    /// *sets* would not do — the whole failure mode is an environment variable
+    /// that the platform does not read, where the test looks right and the
+    /// push lands in the real home.
+    fn assert_sandboxed(&self) {
+        let out = self.command(&["host"]).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let h: serde_json::Value =
+            serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+        assert_eq!(
+            h["home"],
+            json!(self.home.to_str().unwrap()),
+            "the binary must resolve the sandbox home, not {}",
+            h["home"]
+        );
+    }
+
+    fn qd(&self, args: &[&str]) -> (bool, String, String) {
+        let out = self.command(args).output().unwrap();
         (
             out.status.success(),
             String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -95,14 +128,7 @@ return { enabled = not qd.tag("skip"), path = qd.path.home("other"), brew = { "t
     /// Like `qd`, but with extra environment variables set, so that the tests
     /// which care about detection can supply them deliberately.
     fn qd_env(&self, args: &[&str], env: &[(&str, &str)]) -> (bool, String, String) {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_qd"));
-        c.args(["--repo", self.repo.to_str().unwrap()])
-            .args(args)
-            .env("HOME", &self.home)
-            .env("QD_STATE", &self.state)
-            .env_remove("QD_TAGS")
-            .env_remove("DOTFILES_TAGS")
-            .env_remove("WSL_DISTRO_NAME");
+        let mut c = self.command(args);
         for (k, v) in env {
             c.env(k, v);
         }
@@ -159,13 +185,20 @@ fn status_push_pull_undo_through_the_binary() {
     assert_eq!(read(&e.home.join(".config/app/a.txt")), "a1");
     assert_eq!(read(&e.home.join(".config/app/gen")), "g", "setup hook ran");
     assert_eq!(read(&e.home.join("other/o.txt")), "o1");
+    // The module's path is `qd.path.home(".config/app")` and the file name is
+    // joined onto it, so a literal "app/config.nu" would not match on Windows,
+    // where that join puts a `\` before the last component.
     let main = read(&e.home.join(".dotfiles.local.nu"));
+    let sourced = |p: PathBuf| format!("source `{}`", p.display());
     assert!(
-        main.contains("source `") && main.contains("app/config.nu") && main.contains("config.nu`"),
+        main.contains(&sourced(e.home.join(".config/app").join("config.nu"))),
         "{main}"
     );
     let env = read(&e.home.join(".dotfiles-env.local.nu"));
-    assert!(env.contains("app/env.nu"), "{env}");
+    assert!(
+        env.contains(&sourced(e.home.join(".config/app").join("env.nu"))),
+        "{env}"
+    );
 
     let out = e.ok(&["status"]);
     assert!(out.contains("app                up to date"), "{out}");
@@ -250,6 +283,24 @@ fn tags_state_and_completion() {
 
     let out = e.ok(&["push", "--force", "--dry-run"]);
     assert!(out.contains("[setup v1: --force]"), "{out}");
+}
+
+/// Every test below runs the binary against a home of its own, so the one
+/// thing that must hold before any of them means anything is that the
+/// sandboxed home is the home the binary uses. `HOME` alone does not say so
+/// on Windows, where `dirs::home_dir` asks the OS and reads no environment
+/// variable at all; `QD_HOME` is what carries it there.
+#[test]
+fn the_sandboxed_home_is_the_home_the_binary_uses() {
+    let e = Env::new();
+    let out = e.ok(&["host"]);
+    let h: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(h["home"], json!(e.home.to_str().unwrap()), "{out}");
+    assert_eq!(
+        h["config"],
+        json!(e.home.join(".config").to_str().unwrap()),
+        "the derived directories follow it: {out}"
+    );
 }
 
 #[test]
@@ -341,13 +392,16 @@ fn compile_orders_like_the_nushell_tool() {
         format!(
             "source `{}`\nsource `{}`\n",
             e.repo.join("config.nu").display(),
-            e.home.join(".config/app/config.nu").display()
+            e.home.join(".config/app").join("config.nu").display()
         )
     );
     assert_eq!(outputs[1].path, e.home.join(".dotfiles-env.local.nu"));
     assert_eq!(
         outputs[1].content,
-        format!("source `{}`\n", e.home.join(".config/app/env.nu").display())
+        format!(
+            "source `{}`\n",
+            e.home.join(".config/app").join("env.nu").display()
+        )
     );
     assert_eq!(compile::changed(&outputs).len(), 2, "nothing written yet");
 }
@@ -357,9 +411,9 @@ fn self_update_reports_asset_name_and_handles_unreachable_api() {
     let name = qd::update::asset_name();
     assert!(name.starts_with("qd-"), "{name}");
     let src = qd::update::Source {
-        host: "http://127.0.0.1:9".into(),
+        api: "http://127.0.0.1:9".into(),
         owner: "x".into(),
-        package: "qd".into(),
+        repo: "qdot".into(),
         token: None,
     };
     let err = qd::update::self_update(&src, true).unwrap_err();

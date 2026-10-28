@@ -155,6 +155,64 @@ entries, since the legacy files it hides are gone, and drop `DOTFILES_TAGS` from
 
 Delete `qd state adopt` from qd one release later.
 
+## Phase 5 — Forgejo → GitHub, for qdot itself
+
+Status 2026-10-28: the repository had been a Forgejo push mirror to
+`github.com/qxuken/qdot` (tags v0.1.0 through v0.3.0 are there; no GitHub
+release carries assets). GitHub is now the source of truth.
+
+What moved:
+
+1. `.forgejo/workflows/ci.yml` → `.github/workflows/ci.yml` (fmt, clippy,
+   tests on Linux/macOS/Windows) and `.github/workflows/release.yml` (the
+   five-target build, the GitHub release, crates.io). The builds no longer
+   cross-compile: each target gets a runner of its own kind, so the
+   cargo-zigbuild wheels and the cached MacOSX SDK are gone. The Windows
+   target moved from `x86_64-pc-windows-gnu` to `-msvc`; asset names are
+   unchanged, so `self-update` and `install.nu` do not care.
+2. `qd self-update` and `contrib/install.nu` read the GitHub releases API
+   instead of the Forgejo generic package registry. `--host/--package`
+   became `--api/--repository` (`--repo` was taken: it is the dotfiles
+   repository), and `QD_UPDATE_HOST` became `QD_UPDATE_API`.
+3. The crate publishes to crates.io only; `.cargo/config.toml` and the
+   `drydock9` entry in `publish` are gone. A consumer depending on `qdot`
+   drops `registry = "drydock9"`.
+
+CI found four Windows test failures the Forgejo runner had never covered, all
+one root cause: the integration tests sandbox the home with `HOME`, which
+`dirs::home_dir` reads on Unix but not on Windows, where it asks the OS. So the
+Windows runs pushed into the real profile directory. `QD_HOME` now overrides the
+home on every platform, the tests set it, and one test asserts the binary does
+use the sandboxed home — the thing whose absence turned one cause into four
+confusing symptoms. Two failures survived that fix, and one was a real
+bug: `Session::add_module` called `dirs::home_dir()` rather than the home the
+session had resolved, so `qd add` stripped the wrong prefix and wrote a path no
+other machine could read — and the pull that follows it copied nothing, because
+the module pointed at a destination that did not exist. The GitHub runner shows
+it because `TEMP` there is an 8.3 short path (`C:\Users\RUNNER~1\…`) under the
+real profile, so the canonicalized directory really did sit under
+`dirs::home_dir()`. It reproduces anywhere: point `QD_HOME` at a sandbox inside
+the real home and `qd add` names the path from the real home. `qd init`'s
+`~/dotfiles` default had the same hole and now goes through the same helper.
+
+The rest were the tests' own expectations: a path built with
+`join(".config/app/config.nu")` keeps both slashes on Windows, while qd joins
+the last component onto the module path with a `\`.
+
+Still to do, by hand:
+
+- Turn off the Forgejo push mirror, or it force-overwrites GitHub.
+- Set `CRATES_IO_TOKEN` as a repository secret on GitHub (`PACKAGES_TOKEN`
+  is no longer read).
+- The repository's homepage still points at drydock9.
+- Binaries at 0.3.0 and earlier self-update from Forgejo. Either keep that
+  registry serving 0.3.0 until every machine has installed a GitHub build
+  once, or install the next release by hand on each. There are three
+  machines: macOS, WSL, Windows.
+- A GitHub release for v0.3.0 has no assets. `release.yml`'s manual
+  dispatch takes an existing tag, so it can backfill one; crates.io
+  already has 0.3.0 and that step skips itself.
+
 ## Rollback
 
 - Before phase 3 on a machine: nothing to undo, the Nushell tool still works and fossil is unchanged.

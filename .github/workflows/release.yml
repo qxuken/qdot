@@ -1,0 +1,229 @@
+# A `vX.Y.Z` tag cuts a release:
+#
+#   verify ── build [5 targets] ── release ── publish
+#
+# Every target builds on a runner of its own kind, so nothing cross-links:
+# musl on each Linux arch, both Apple targets on the arm64 macOS runner (the
+# Xcode SDK carries x86_64 too), MSVC on Windows. Linux is fully static
+# through the musl target; the macOS and Windows binaries link the system
+# libraries only.
+#
+# `release` attaches the binaries, checksums.sha256 and install.nu to the
+# GitHub release, which is what `qd self-update` and contrib/install.nu read.
+# `publish` then pushes the crate to crates.io (secret CRATES_IO_TOKEN).
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: An existing vX.Y.Z tag to (re)build the release for.
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # The tag, Cargo.toml and Cargo.lock have to agree before anything is
+  # built: a mismatch here is a tag to delete, not a release to yank.
+  verify:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Tag matches Cargo.toml
+        id: v
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          want="${tag#v}"
+          have=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$want" != "$have" ]; then
+            echo "tag $want != Cargo.toml $have" >&2
+            exit 1
+          fi
+          echo "version=$want" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Install toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      # --locked here so a stale Cargo.lock fails the release rather than
+      # silently resolving to something the tag was never tested with.
+      - name: Cargo.lock is current
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            asset: qd-linux-x86_64
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            asset: qd-linux-aarch64
+          - target: aarch64-apple-darwin
+            os: macos-15
+            asset: qd-macos-aarch64
+          - target: x86_64-apple-darwin
+            os: macos-15
+            asset: qd-macos-x86_64
+          - target: x86_64-pc-windows-msvc
+            os: windows-2025
+            asset: qd-windows-x86_64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
+
+      - name: Install toolchain
+        run: rustup toolchain install stable --profile minimal -t ${{ matrix.target }}
+
+      # musl-gcc links the static binary; mlua and ring both compile C here.
+      - name: Install musl tools
+        if: contains(matrix.target, 'linux-musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Collect
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.target }}" in
+            *windows*) bin=qd.exe ;;
+            *) bin=qd ;;
+          esac
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/$bin" "dist/${{ matrix.asset }}"
+          ls -l dist
+
+      # The two Linux binaries are static, so the runner can check them;
+      # the macOS and Windows ones only run on their own kind.
+      - name: Smoke test
+        if: matrix.target != 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x "dist/${{ matrix.asset }}" || true
+          reported=$("./dist/${{ matrix.asset }}" --version)
+          echo "$reported"
+          case "$reported" in
+            *"${{ needs.verify.outputs.version }}"*) ;;
+            *) echo "binary reports $reported, expected ${{ needs.verify.outputs.version }}" >&2; exit 1 ;;
+          esac
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: [verify, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
+
+      # Without `merge-multiple` each artifact lands in a directory of its
+      # own; with it, all five files land side by side in dist/.
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          for a in qd-linux-x86_64 qd-linux-aarch64 qd-windows-x86_64.exe \
+                   qd-macos-aarch64 qd-macos-x86_64; do
+            test -f "$a" || { echo "missing $a" >&2; exit 1; }
+          done
+          sha256sum * > checksums.sha256
+          cat checksums.sha256
+          # Shipped beside the binaries so a fresh machine can fetch the
+          # installer without a clone. After the checksums on purpose: it is
+          # the thing that verifies the others.
+          cp ../contrib/install.nu .
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.verify.outputs.tag }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          notes=$(mktemp)
+          {
+            echo "## qd $VERSION"
+            echo
+            echo '    nu install.nu --version '"$VERSION"
+            echo
+            echo "Or \`qd self-update\` from $VERSION's predecessor."
+            echo
+            echo "Binaries are verified against \`checksums.sha256\`."
+          } > "$notes"
+          # Idempotent, so a re-run after a failed upload replaces the assets
+          # rather than erroring on an existing release.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --title "qd $VERSION" --notes-file "$notes" --verify-tag
+          fi
+          gh release view "$TAG"
+
+  publish:
+    needs: [verify, release]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
+
+      - name: Install toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      # A version on crates.io stays forever — yanked, never deleted — so
+      # this runs last, once the binaries are up. Already there (a dispatch
+      # for an old tag, or a re-run after the upload failed) is not an error.
+      - name: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          if curl -fsS -A "qdot-release-workflow" \
+               "https://crates.io/api/v1/crates/qdot/$VERSION" >/dev/null; then
+            echo "qdot $VERSION is already on crates.io"
+            exit 0
+          fi
+          cargo publish --locked --registry crates-io

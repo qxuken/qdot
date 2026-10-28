@@ -2,25 +2,26 @@
 
 # Portable installer for qd.
 #
-# Downloads a released binary from the Forgejo generic package registry,
-# verifies its SHA-256 against the published checksums file, and installs it
-# into a user-writable directory. No admin rights, no compiler, no clone.
+# Downloads a released binary from the GitHub release assets, verifies its
+# SHA-256 against the published checksums file, and installs it into a
+# user-writable directory. No admin rights, no compiler, no clone.
 #
 #   nu install.nu                                  # latest, into the default dir
-#   nu install.nu --version 0.1.0                  # a specific version
+#   nu install.nu --version 0.3.0                  # a specific version
 #   nu install.nu --dest ~/bin                     # somewhere else
 #   nu install.nu --init-url ssh://git@host/o/r.git  # …then set the machine up
 #
 # On a machine without nushell yet, fetch this script with the shell you have:
 #
-#   curl -fLO https://drydock9.qxuken.dev/api/packages/qxuken/generic/qd/0.1.0/install.nu
+#   curl -fLO https://github.com/qxuken/qdot/releases/latest/download/install.nu
 #
-# For a private registry pass --token, or better, set QD_UPDATE_TOKEN so the
-# token stays out of shell history and the process list.
+# For a private repository pass --token, or better, set QD_UPDATE_TOKEN so the
+# token stays out of shell history and the process list. The token reaches the
+# API only: asset URLs redirect to a signed CDN URL that rejects it.
 
-const DEFAULT_HOST = "https://drydock9.qxuken.dev"
+const DEFAULT_API = "https://api.github.com"
 const DEFAULT_OWNER = "qxuken"
-const PACKAGE = "qd"
+const DEFAULT_REPO = "qdot"
 
 # Asset published for this platform. The names match Rust's OS/ARCH constants,
 # which is exactly what `$nu.os-info` reports.
@@ -46,7 +47,11 @@ def default-dest []: nothing -> path {
 }
 
 def auth-headers [token: string]: nothing -> record {
-  if ($token | is-empty) { {} } else { {Authorization: $"token ($token)"} }
+  let base = {
+    Accept: "application/vnd.github+json"
+    "X-GitHub-Api-Version": "2022-11-28"
+  }
+  if ($token | is-empty) { $base } else { $base | merge {Authorization: $"Bearer ($token)"} }
 }
 
 # Sortable pieces of a version; a prerelease ranks below its release.
@@ -63,39 +68,46 @@ def version-parts [v: string]: nothing -> record {
   }
 }
 
-def latest-version [host: string, owner: string, token: string]: nothing -> string {
-  let url = $"($host)/api/v1/packages/($owner)?type=generic&q=($PACKAGE)&limit=100"
-  let packages = try {
+# Drafts are invisible without a token and ranked out with one; a prerelease
+# ranks below the release of the same version, so it only wins when it is the
+# newest thing published.
+def latest-version [api: string, owner: string, repo: string, token: string]: nothing -> string {
+  let url = $"($api)/repos/($owner)/($repo)/releases?per_page=100"
+  let releases = try {
     http get --headers (auth-headers $token) $url
   } catch {|e|
-    error make {msg: $"cannot reach the package registry at ($url): ($e.msg)"}
+    error make {msg: $"cannot reach the releases API at ($url): ($e.msg)"}
   }
-  let versions = ($packages | where name == $PACKAGE | get version)
-  if ($versions | is-empty) {
-    error make {msg: $"no published versions of `($PACKAGE)` at ($url)"}
+  let tags = ($releases | where not ($it.draft? | default false) | get tag_name)
+  if ($tags | is-empty) {
+    error make {msg: $"no published releases at ($url)"}
   }
-  $versions | each {|v| version-parts $v} | sort-by major minor patch rel | last | get version
+  let newest = ($tags | each {|v| version-parts $v} | sort-by major minor patch rel | last)
+  $newest.version | str replace --regex '^v' ''
 }
 
-def fetch [url: string, token: string]: nothing -> binary {
+# No token: an asset URL redirects to a signed CDN URL, which rejects a
+# request that also carries an Authorization header.
+def fetch [url: string]: nothing -> binary {
   try {
-    http get --headers (auth-headers $token) --raw $url
+    http get --raw $url
   } catch {|e|
     error make {msg: $"cannot download ($url): ($e.msg)"}
   }
 }
 
 export def main [
-  --version: string             # version to install (default: the newest published)
+  --version: string             # version to install (default: the newest released)
   --dest: path                  # install directory (default: ~/.local/bin, or %LOCALAPPDATA%\qd\bin)
-  --host: string = $DEFAULT_HOST # Forgejo base URL
-  --owner: string = $DEFAULT_OWNER # package owner
-  --token: string               # registry token (or set QD_UPDATE_TOKEN)
+  --api: string = $DEFAULT_API  # GitHub API base
+  --owner: string = $DEFAULT_OWNER # repository owner
+  --repo: string = $DEFAULT_REPO # repository name
+  --token: string               # token for a private repository (or set QD_UPDATE_TOKEN)
   --init-url: string            # run `qd init --url <this>` after installing
   --keep                        # do not overwrite an existing binary
 ] {
   let token = ($token | default ($env.QD_UPDATE_TOKEN? | default ""))
-  let host = ($host | str trim --right --char '/')
+  let api = ($api | str trim --right --char '/')
   let asset = (asset-name)
   let dest = ($dest | default (default-dest) | path expand)
   let exe = if $nu.os-info.name == "windows" { "qd.exe" } else { "qd" }
@@ -106,16 +118,18 @@ export def main [
     return
   }
 
-  let version = ($version | default (latest-version $host $owner $token))
-  let base = $"($host)/api/packages/($owner)/generic/($PACKAGE)/($version)"
+  let version = ($version | default (latest-version $api $owner $repo $token)
+    | str replace --regex '^v' '')
+  # The download endpoint takes the tag, which carries the `v`.
+  let base = $"https://github.com/($owner)/($repo)/releases/download/v($version)"
   print $"installing qd ($version) \(($asset)) into ($dest)"
 
   # The checksums file is served as octet-stream, so decode it before parsing.
-  # A 404 here almost always means the version itself is not published.
+  # A 404 here almost always means the version itself has no release.
   let sums = try {
-    http get --headers (auth-headers $token) --raw $"($base)/checksums.sha256"
+    http get --raw $"($base)/checksums.sha256"
   } catch {|e|
-    error make {msg: $"qd ($version) is not published at ($base)", help: $"($e.msg)"}
+    error make {msg: $"qd ($version) has no release at ($base)", help: $"($e.msg)"}
   }
   let expected = (
     $sums
@@ -132,7 +146,7 @@ export def main [
   # Stage next to the target so the final move is a rename on the same volume.
   mkdir $dest
   let staged = ($dest | path join $".qd-install-($version).tmp")
-  fetch $"($base)/($asset)" $token | save --raw --force $staged
+  fetch $"($base)/($asset)" | save --raw --force $staged
 
   let actual = (open --raw $staged | hash sha256)
   if $actual != $expected {

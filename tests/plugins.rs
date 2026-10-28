@@ -11,6 +11,16 @@ use qd::packages::{self, Action};
 use qd::repo::Repo;
 use serde_json::json;
 
+/// A fake absolute path on every platform: on Windows a leading `/` has no
+/// prefix and so is not absolute.
+fn abs(unix: &str) -> String {
+    if cfg!(windows) {
+        format!("C:{unix}")
+    } else {
+        unix.to_owned()
+    }
+}
+
 fn write(p: &Path, s: &str) {
     std::fs::create_dir_all(p.parent().unwrap()).unwrap();
     std::fs::write(p, s).unwrap();
@@ -187,6 +197,7 @@ fn a_list_returning_plugin_prints() {
     let out = Command::new(env!("CARGO_BIN_EXE_qd"))
         .args(["--repo", e.repo.to_str().unwrap(), "packages", "list"])
         .env("HOME", &e.home)
+        .env("QD_HOME", &e.home)
         .env("QD_STATE", &e.state)
         .output()
         .unwrap();
@@ -309,14 +320,18 @@ fn compile_results_are_checked() {
         "plugins stay pure: {err}"
     );
 
-    let e = Env::new(
-        r#"local one = function() return { { path = "/same", content = "" } } end
-           return { plugins = { { name = "a", compile = one }, { name = "b", compile = one } } }"#,
-    );
+    // Absolute on Windows too, where a leading `/` alone is not: this entry is
+    // well-shaped, so it reaches the absoluteness check, and a relative path
+    // would be rejected there before the duplicate could be reported.
+    let same = abs("/same");
+    let e = Env::new(&format!(
+        r#"local one = function() return {{ {{ path = "{same}", content = "" }} }} end
+           return {{ plugins = {{ {{ name = "a", compile = one }}, {{ name = "b", compile = one }} }} }}"#
+    ));
     write(&e.repo.join("app/qd.lua"), "return {}");
     write(&e.repo.join("zed/qd.lua"), "return {}");
     let err = format!("{:#}", compile::compile(&e.load().unwrap()).unwrap_err());
-    assert!(err.contains("both compile /same"), "{err}");
+    assert!(err.contains(&format!("both compile {same}")), "{err}");
 }
 
 #[test]
@@ -329,10 +344,15 @@ fn which_finds_executables_on_path() {
     );
     write(
         &e.repo.join("zed/qd.lua"),
-        r#"assert(qd.which("definitely-not-a-command-qd") == nil)
+        &format!(
+            r#"assert(qd.which("definitely-not-a-command-qd") == nil)
            assert(qd.which("sh") ~= nil or qd.which("cmd") ~= nil)
-           assert(qd.path.is_absolute("/x") and not qd.path.is_absolute("x"))
-           return {}"#,
+           assert(qd.path.is_absolute("{}") and not qd.path.is_absolute("x"))
+           return {{}}"#,
+            // `qd.path.is_absolute` is the platform's own answer, and on
+            // Windows a leading `/` alone does not make a path absolute.
+            abs("/x")
+        ),
     );
     drop(tmp);
     e.load().unwrap();

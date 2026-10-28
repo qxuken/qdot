@@ -60,7 +60,8 @@ them as strays.
 
 `qd state path` shows the directory holding `state.toml` (tags, repo and
 identity paths, per-module setup versions), `journal.jsonl`, and `trash/`.
-Override it with `QD_STATE`. Removed and overwritten files go to the trash;
+Override it with `QD_STATE`, and the home that destinations hang off with
+`QD_HOME`. Removed and overwritten files go to the trash;
 `qd trash prune --older 30d` cleans up.
 
 Tags gate `enabled` in a config. `qd tag add <name>` records one in `state.toml`,
@@ -83,7 +84,7 @@ the library alone — no clap, ureq or self-replace — and `qd::Session`
 does what the binary does, returning data and printing nothing:
 
 ```toml
-qdot = { version = "0.2", default-features = false, registry = "drydock9" }
+qdot = { version = "0.3", default-features = false }
 ```
 
 ```rust
@@ -102,10 +103,14 @@ does.
 
     cargo build --release
 
+`.github/workflows/ci.yml` runs fmt, clippy and the tests on Linux, macOS
+and Windows for every push and pull request.
+
 Releases are cut by pushing a `vX.Y.Z` tag matching `Cargo.toml`;
-`.forgejo/workflows/ci.yml` cross-compiles every target with cargo-zigbuild on
-the Linux runner and uploads the binaries to the Forgejo generic package
-registry, where `qd self-update` finds them.
+`.github/workflows/release.yml` builds each target on a runner of its own
+kind, attaches the five binaries plus `checksums.sha256` and `install.nu`
+to the GitHub release — where `qd self-update` finds them — and publishes
+the crate to crates.io.
 
 ## Installing
 
@@ -117,11 +122,16 @@ SHA-256 against the published checksums, and installs it into `~/.local/bin`
     nu contrib/install.nu --version 0.1.0 --dest ~/bin
     nu contrib/install.nu --init-url ssh://git@drydock9-port1.qxuken.dev/qxuken/dotfiles.git
 
-From 0.1.1 onward it is published beside the binaries, so a machine with
-nushell but no clone can fetch it first (0.1.0 shipped binaries only):
+It is published beside the binaries, so a machine with nushell but no clone
+can fetch it first:
 
-    curl -fLO https://drydock9.qxuken.dev/api/packages/qxuken/generic/qd/<version>/install.nu
+    curl -fLO https://github.com/qxuken/qdot/releases/latest/download/install.nu
 
 Without nushell, download the asset for the platform directly
-(`qd-linux-x86_64`, `qd-macos-aarch64`, `qd-windows-x86_64.exe`, …) from
-`.../generic/qd/<version>/` and `chmod +x` it.
+(`qd-linux-x86_64`, `qd-macos-aarch64`, `qd-windows-x86_64.exe`, …):
+
+    curl -fLO https://github.com/qxuken/qdot/releases/latest/download/qd-macos-aarch64
+
+and `chmod +x` it. Releases before 0.4.0 live in the Forgejo package
+registry instead, and `qd self-update` from one of those binaries still
+reads that registry; install 0.4.0 or later once to move over.
