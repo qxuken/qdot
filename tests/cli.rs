@@ -357,9 +357,9 @@ fn self_update_reports_asset_name_and_handles_unreachable_api() {
     let name = qd::update::asset_name();
     assert!(name.starts_with("qd-"), "{name}");
     let src = qd::update::Source {
-        host: "http://127.0.0.1:9".into(),
+        api: "http://127.0.0.1:9".into(),
         owner: "x".into(),
-        package: "qd".into(),
+        repo: "qdot".into(),
         token: None,
     };
     let err = qd::update::self_update(&src, true).unwrap_err();

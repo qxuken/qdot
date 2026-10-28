@@ -1,0 +1,69 @@
+# fmt and clippy once, tests on each OS qd ships for.
+#
+# The release matrix lives in release.yml; this one only has to say whether
+# main is sound. Both use GitHub's own runners: rustc targets the host, so
+# nothing here cross-compiles and nothing needs an SDK.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain
+        run: rustup toolchain install stable --profile minimal -c rustfmt -c clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      # The library half has to keep building without clap, ureq,
+      # self-replace or sha2, which `--all-features` would hide.
+      - name: Clippy (library only)
+        run: cargo clippy --no-default-features --lib -- -D warnings
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+
+      # The integration tests shell out to git and commit, so they need an
+      # identity; the runners ship none.
+      - name: Configure git
+        run: |
+          git config --global user.name "ci"
+          git config --global user.email "ci@example.invalid"
+          git config --global init.defaultBranch main
+
+      - name: Test
+        run: cargo test --all-features

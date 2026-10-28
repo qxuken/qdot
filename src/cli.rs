@@ -134,15 +134,18 @@ enum Cmd {
         #[command(subcommand)]
         cmd: TrashCmd,
     },
-    /// Download and install the latest version from the Forgejo package registry.
+    /// Download and install the latest release from GitHub.
     SelfUpdate {
-        #[arg(long, env = "QD_UPDATE_HOST", default_value = update::DEFAULT_HOST)]
-        host: String,
+        /// API base, for a GitHub Enterprise instance.
+        #[arg(long, env = "QD_UPDATE_API", default_value = update::DEFAULT_API)]
+        api: String,
         #[arg(long, env = "QD_UPDATE_OWNER", default_value = update::DEFAULT_OWNER)]
         owner: String,
-        #[arg(long, default_value = update::DEFAULT_PACKAGE)]
-        package: String,
-        /// Token for a private package registry.
+        /// Not `--repo`, which is the dotfiles repository.
+        #[arg(long, env = "QD_UPDATE_REPO", default_value = update::DEFAULT_REPO)]
+        repository: String,
+        /// Token for a private repository; it lists releases, it cannot
+        /// download their assets.
         #[arg(long, env = "QD_UPDATE_TOKEN", hide_env_values = true)]
         token: Option<String>,
         #[arg(long)]
@@ -582,16 +585,16 @@ pub fn run() -> Result<()> {
             }
         },
         Cmd::SelfUpdate {
-            host,
+            api,
             owner,
-            package,
+            repository,
             token,
             dry_run,
         } => {
             let src = update::Source {
-                host,
+                api,
                 owner,
-                package,
+                repo: repository,
                 token,
             };
             match update::self_update(&src, dry_run)? {

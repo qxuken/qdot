@@ -10,8 +10,8 @@ Replacement for `dotfiles.nu`: a single static binary, Rust, Lua-configured, git
 | Config | one `qd.lua` per module + root `qd.lua` | replaces `qd-config.yml` and `qd-init.nu`; host merging and `%tokens%` become plain Lua |
 | Lua engine | `mlua` with `lua55` + `vendored` + `serialize` features | no system Lua, cross-compiles with `cc` |
 | Encryption | `age` crate, X25519, `master.rec` committed / `master.key` ignored | unchanged from today; SSH-key identities via `age::ssh` are an optional later step |
-| VCS | git on Forgejo, behind a `Vcs` trait; first impl shells out to system git, `git2` backend later | avoids vendored libgit2/libssh2/openssl cross-build pain up front |
-| Hosting/CI | Forgejo Actions on one Linux runner, cross-compile matrix, upload to Forgejo Releases | `qd self-update` reads the releases API |
+| VCS | git on GitHub, behind a `Vcs` trait; first impl shells out to system git, `git2` backend later | avoids vendored libgit2/libssh2/openssl cross-build pain up front |
+| Hosting/CI | GitHub Actions, one runner per target kind, assets attached to the GitHub release | `qd self-update` reads the releases API |
 | Machine state | `state.toml` in the platform state dir, plus `journal.jsonl` and a trash dir | replaces dest-exists first-run detection; tags live here rather than only in `QD_TAGS`/`DOTFILES_TAGS` |
 | Sync semantics | content-hash compare, plan/apply split, atomic writes, removes go to trash | fixes mtime clobbering from fresh clones; makes `status`/`--dry-run` free |
 | Plugins | Lua tables declared by the root `qd.lua`; the Nushell compiler and brew/scoop ship as built-ins | keeps the core a pure sync pipeline; anything shell- or package-manager-specific is data folded by a plugin |
@@ -19,8 +19,8 @@ Replacement for `dotfiles.nu`: a single static binary, Rust, Lua-configured, git
 
 ## Repos
 
-- `qd` — the tool, CI, releases.
-- `dotfiles` — data. Migrate from fossil to git (`fossil export --git` → `git fast-import`). Optional Forgejo push mirror to GitHub.
+- `qdot` — the tool, CI, releases. `github.com/qxuken/qdot`, source of truth since the GitHub migration.
+- `dotfiles` — data. Migrated from fossil to git (`fossil export --git` → `git fast-import`).
 
 ## Module file
 
@@ -238,7 +238,7 @@ last_push = 2026-09-04T10:12:00Z
 | `qd tag list\|add\|rm` | machine tags in state |
 | `qd state show\|path\|adopt\|set-repo\|set-identity` | state file |
 | `qd undo [run]`, `qd journal [--last]`, `qd trash prune [--older 30d]\|path` | journal/trash |
-| `qd self-update [--api] [--dry-run]` | Forgejo releases API, SHA-256 verified |
+| `qd self-update [--api] [--owner] [--repository] [--token] [--dry-run]` | GitHub releases API, SHA-256 verified |
 | `qd __complete modules\|all-modules` | for `contrib/qd.nu` |
 
 Git wraps the pipeline: `push -s` fetches and fast-forwards before discovery; `pull -s` commits and pushes after apply.
@@ -249,8 +249,7 @@ Git wraps the pipeline: `push -s` fetches and fast-forwards before discovery; `p
 `status`, `sync`, `apply`, `compile` and `add_module`: every operation,
 returning data. `cli.rs` prints over it. The `cli` feature (default)
 adds the binary, clap, ureq and self-replace; off, the crate is the
-library alone. Published as `qdot`, MIT, to the drydock9 cargo registry
-and to crates.io by CI on a tag.
+library alone. Published as `qdot`, MIT, to crates.io by CI on a tag.
 
 ## Crates
 
@@ -258,21 +257,24 @@ clap (derive, env), mlua (`lua55`, `vendored`, `serialize`, `error-send`), serde
 
 ## Release pipeline
 
-`.forgejo/workflows/ci.yml` follows the proven kui workflow: a `check` job (fmt, clippy, test) on every push, and on a `v*` tag a five-target build matrix on the single Linux docker runner using `node:24-bookworm` containers with rustup inside, cargo-zigbuild plus the ziglang wheel for Linux (musl, static), Windows (gnu) and macOS (with the cached MacOSX SDK for framework stubs). A `publish` job checks the tag against `Cargo.toml`, writes `checksums.sha256`, and uploads everything to the Forgejo **generic package registry** as package `qd` version `X.Y.Z` using the `PACKAGES_TOKEN` secret (write:packages). `qd self-update` lists versions through `/api/v1/packages/{owner}?type=generic&q=qd`, downloads `qd-<os>-<arch>[.exe]` from `/api/packages/{owner}/generic/qd/{version}/`, verifies the checksum, and swaps the binary. Defaults: host `https://drydock9.qxuken.dev`, owner `qxuken`; override with `--host/--owner` or `QD_UPDATE_HOST/QD_UPDATE_OWNER`. Unverified until the first tag is pushed.
+Two workflows on GitHub's own runners. `.github/workflows/ci.yml` runs fmt and clippy once (including `--no-default-features --lib`, so the library half keeps building without clap, ureq, self-replace and sha2) and the test suite on `ubuntu-24.04`, `macos-15` and `windows-2025`, for every push to main and every pull request.
+
+`.github/workflows/release.yml` runs on a `v*` tag, or on a manual dispatch naming an existing tag. `verify` checks the tag against `Cargo.toml` and that `Cargo.lock` is current, and is the single place the version is derived. `build` then builds the five targets, each on a runner of its own kind — so nothing cross-links and no Apple SDK is downloaded: musl on `ubuntu-24.04` and `ubuntu-24.04-arm` (fully static), both Apple targets on `macos-15` (the Xcode SDK carries x86_64 too), and `x86_64-pc-windows-msvc` on `windows-2025`. Every binary but the x86_64 macOS one, which the arm64 runner cannot execute, is run with `--version` and checked against the tag. `release` writes `checksums.sha256` over the five, copies `contrib/install.nu` in beside them, and attaches the lot to the GitHub release, replacing the assets if the release already exists. `publish` pushes the crate to crates.io with the `CRATES_IO_TOKEN` secret, skipping it when that version is already there.
+
+`qd self-update` lists `/repos/{owner}/{repo}/releases`, takes the highest non-draft version, reads `checksums.sha256` off that release, downloads `qd-<os>-<arch>[.exe]`, verifies the SHA-256 and swaps the binary. Defaults: api `https://api.github.com`, owner `qxuken`, repo `qdot`; override with `--api/--owner/--repository` (not `--repo`, which is the dotfiles repository) or `QD_UPDATE_API/QD_UPDATE_OWNER/QD_UPDATE_REPO`, and `--token`/`QD_UPDATE_TOKEN` for a private repository's releases list. Binaries from 0.3.0 and earlier read the Forgejo generic package registry instead and cannot self-update across the move.
 
 ## Milestones
 
-1. Migrate `dotfiles` fossil → git on Forgejo. Independent of the tool.
+1. Migrate `dotfiles` fossil → git. Independent of the tool.
 2. Scaffold `qd`: Host, Lua host + `qd` API, discovery, `show`, read-only `status`. Hand-convert the 13 YAML configs and 6 init scripts; verify with `show`.
 3. Planner + apply + age: `push`, `pull`, `-all`, `--dry-run`, `--no-remove`, trash/journal.
 4. State file, setup versioning, `state adopt`, tags.
 5. Packages, `compile`, `init`.
 6. `Vcs` trait with system git; `remote *`; `-s` flags.
-7. Forgejo Actions release matrix + `self-update`.
+7. Actions release matrix + `self-update`.
 8. Swap Nushell aliases and completer, delete `dotfiles.nu` and `.fossil-settings`.
 
 ## Open
 
-- Keep the GitHub mirror (Forgejo push mirror) or drop it.
 - Move to SSH-key age identities now or after migration.
 - `git2` backend: needed at all, or is system git enough long-term.
