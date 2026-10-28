@@ -116,7 +116,7 @@ impl Host {
 /// `SHGetKnownFolderPath` on Windows, which no environment variable reaches —
 /// so a test, or anyone running qd against a home that is not theirs, has no
 /// other way to say which home is meant.
-fn home_dir() -> Result<PathBuf> {
+pub(crate) fn home_dir() -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("QD_HOME") {
         return Ok(PathBuf::from(p));
     }

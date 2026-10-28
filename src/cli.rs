@@ -443,9 +443,9 @@ pub fn run() -> Result<()> {
                 Some(p) => p,
                 None => match ctx.root() {
                     Ok(r) => r,
-                    Err(_) => dirs::home_dir()
-                        .context("no home directory")?
-                        .join("dotfiles"),
+                    // Before there is a repo there is no Host, but the home
+                    // still has to be the one `QD_HOME` names if it names one.
+                    Err(_) => crate::host::home_dir()?.join("dotfiles"),
                 },
             };
             if !root.exists() {

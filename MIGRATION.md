@@ -184,9 +184,20 @@ one root cause: the integration tests sandbox the home with `HOME`, which
 Windows runs pushed into the real profile directory. `QD_HOME` now overrides the
 home on every platform, the tests set it, and one test asserts the binary does
 use the sandboxed home — the thing whose absence turned one cause into four
-confusing symptoms. A fifth failure was the test's own expectation: it built a
-path with `join(".config/app/config.nu")`, which keeps both slashes on Windows,
-while qd joins the last component with a `\`.
+confusing symptoms. Two failures survived that fix, and one was a real
+bug: `Session::add_module` called `dirs::home_dir()` rather than the home the
+session had resolved, so `qd add` stripped the wrong prefix and wrote a path no
+other machine could read — and the pull that follows it copied nothing, because
+the module pointed at a destination that did not exist. The GitHub runner shows
+it because `TEMP` there is an 8.3 short path (`C:\Users\RUNNER~1\…`) under the
+real profile, so the canonicalized directory really did sit under
+`dirs::home_dir()`. It reproduces anywhere: point `QD_HOME` at a sandbox inside
+the real home and `qd add` names the path from the real home. `qd init`'s
+`~/dotfiles` default had the same hole and now goes through the same helper.
+
+The rest were the tests' own expectations: a path built with
+`join(".config/app/config.nu")` keeps both slashes on Windows, while qd joins
+the last component onto the module path with a `\`.
 
 Still to do, by hand:
 

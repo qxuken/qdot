@@ -161,13 +161,20 @@ fn status_push_pull_undo_through_the_binary() {
     assert_eq!(read(&e.home.join(".config/app/a.txt")), "a1");
     assert_eq!(read(&e.home.join(".config/app/gen")), "g", "setup hook ran");
     assert_eq!(read(&e.home.join("other/o.txt")), "o1");
+    // The module's path is `qd.path.home(".config/app")` and the file name is
+    // joined onto it, so a literal "app/config.nu" would not match on Windows,
+    // where that join puts a `\` before the last component.
     let main = read(&e.home.join(".dotfiles.local.nu"));
+    let sourced = |p: PathBuf| format!("source `{}`", p.display());
     assert!(
-        main.contains("source `") && main.contains("app/config.nu") && main.contains("config.nu`"),
+        main.contains(&sourced(e.home.join(".config/app").join("config.nu"))),
         "{main}"
     );
     let env = read(&e.home.join(".dotfiles-env.local.nu"));
-    assert!(env.contains("app/env.nu"), "{env}");
+    assert!(
+        env.contains(&sourced(e.home.join(".config/app").join("env.nu"))),
+        "{env}"
+    );
 
     let out = e.ok(&["status"]);
     assert!(out.contains("app                up to date"), "{out}");
